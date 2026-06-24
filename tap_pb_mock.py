@@ -431,7 +431,9 @@ class ControlHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         if path == "/health":
-            return self._send(200, {"ok": True})
+            with store_lock:
+                n = len(flow_store)
+            return self._send(200, {"ok": True, "flow_count": n})
         if path == "/flows":
             return self._send(200, self._flows_summary())
         if path == "/rules":
