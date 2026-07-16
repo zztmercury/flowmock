@@ -47,4 +47,4 @@ echo
 exec "$VENV/bin/mitmdump" -s "$DIR/flowmock_addon.py" \
   --mode "regular@127.0.0.1:$PROXY_PORT" \
   --set "flowmock_control_port=$CONTROL_PORT" \
-  -q
+  --flow-detail 1

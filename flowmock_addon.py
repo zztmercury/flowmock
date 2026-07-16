@@ -591,6 +591,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "content_type": f.response.headers.get("content-type", "") if f.response else "",
                 "data": rec.get(data_key),
                 "error": rec.get("error"),
+                "patch_error": rec.get("patch_error"),
             })
         return self._send(404, {"error": "unknown route"})
 
@@ -792,6 +793,7 @@ class TapPbMock:
         # 2. patch rules: modify specific fields
         # Work on a deepcopy so encode failure doesn't corrupt decoded view
         patch_rules = self.mock.matched(flow.request.url, info["protocol"], "patch")
+        patch_error = None
         if patch_rules:
             patched = copy.deepcopy(data)
             changed = False
@@ -800,12 +802,14 @@ class TapPbMock:
                     set_by_path(patched, parse_path(r.path), r.value)
                     changed = True
                 except Exception as e:
-                    ctx.log.warn(f"mock rule {r.path} failed: {e}")
+                    patch_error = f"patch rule '{r.path}' failed: {e}"
+                    ctx.log.warn(patch_error)
             if changed:
                 try:
                     flow.response.content = self.codec.encode(info, patched)
                     data = patched  # only update on encode success
                 except Exception as e:
+                    patch_error = f"re-encode failed: {e}"
                     ctx.log.warn(f"re-encode failed {flow.request.url}: {e}")
                     # encode failed: data stays as-is (original), response.content unchanged
 
@@ -820,6 +824,7 @@ class TapPbMock:
 
         _store_flow(flow.id, {
             "flow": flow, "info": info, "decoded": data, "original": original_data,
+            "patch_error": patch_error,
             "ts": time.time(),
         })
 

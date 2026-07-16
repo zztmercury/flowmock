@@ -239,6 +239,21 @@ flowmock agent-doc                          # print this guide
   around the JSON: `'{"k":"v"}'`.
 - Paths are **case-sensitive** — proto field names are snake_case (not camelCase).
 
+### ⚠️ PB type gotchas — decoded JSON can mislead you
+PB decoded to JSON does NOT preserve exact type info. Common pitfalls:
+- **int64/uint64 fields**: shown as **string** in decoded JSON (e.g. `"123"` not `123`),
+  because JSON Number loses precision >2^53. When patching, provide `123` (int) or
+  `"123"` (numeric string). Providing `"sku1"` (non-numeric string) → encode fails.
+- **enum fields**: shown as **string name** (e.g. `"STATUS_ACTIVE"`). Patch with the
+  string name or the numeric value.
+- **bytes fields**: shown as **base64 string**. Patch with valid base64.
+- **google.protobuf.Any**: has `@type` metadata field. Do NOT modify `@type` —
+  only modify the business fields nested inside.
+- **Always check `patch_error`**: after adding a patch rule, `decode <id>` will show
+  `patch_error` if encode failed (e.g. type mismatch). Fix the value type and retry.
+  Example: `patch_error: re-encode failed: ... invalid literal for int() with base 10: 'sku1'`
+  → the field expects int, you provided a non-numeric string.
+
 ## 5. Troubleshooting
 - **`decode` returns `error: "Couldn't find message X"`**: the .desc loaded but
   message X's file failed to add (missing google well-known dep) — this is an
