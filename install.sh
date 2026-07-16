@@ -4,7 +4,7 @@ set -euo pipefail
 # flowmock install.sh — oh-my-zsh style one-line installer
 #
 # Usage:
-#   One-line:  sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/master/install.sh)"
+#   One-line:  sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/main/install.sh)"
 #   Local:     ./install.sh
 #   Update:    ./install.sh --update
 #   Uninstall: ./install.sh --uninstall
@@ -13,7 +13,7 @@ set -euo pipefail
 # Skill installation is handled by: flowmock skill install
 
 REPO_URL="https://github.com/zztmercury/flowmock.git"
-REPO_RAW="https://raw.githubusercontent.com/zztmercury/flowmock/master"
+REPO_RAW="https://raw.githubusercontent.com/zztmercury/flowmock/main"
 INSTALL_DIR_DEFAULT="$HOME/.flowmock"
 PYTHON_MIN_MAJOR=3
 PYTHON_MIN_MINOR=10

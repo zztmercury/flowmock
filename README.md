@@ -22,7 +22,7 @@ addon 自动识别协议（按 Charles Protocol Buffers 自描述规则：Conten
 
 ### 一行安装（oh-my-zsh 式）
 ```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/master/install.sh)"
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/main/install.sh)"
 ```
 
 ### 本地安装（调试用）
