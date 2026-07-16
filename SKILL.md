@@ -18,7 +18,7 @@ Python / venv / CLI / skill / addon / traffic. Interpret the result:
 
 | result | meaning | action |
 |---|---|---|
-| addon: NOT running | mitmproxy not running | Ask user to run `flowmock start`. **Stop** until they confirm. |
+| addon: NOT running | mitmproxy not running | Run `flowmock start` (background, non-blocking — starts mitmdump, waits for control API, returns). |
 | addon: OK, traffic: NO traffic | addon up but no traffic | Proxy/cert not ready OR app idle. Ask user to operate the app (open a page / search) to trigger traffic, then re-check. If still 0 after app activity → cert not installed or device proxy not set (guide: device visits http://mitm.it to install CA; `adb reverse tcp:8080 tcp:8080` + `adb shell settings put global http_proxy 127.0.0.1:8080`). |
 | addon: OK (flow_count=N>0) | ready | proceed to workflow |
 
@@ -90,12 +90,31 @@ flowmock breakpoint add '<url_regex>'
 - **Rule-based, persistent**: add once, all future matching flows auto-pause.
 - Unlike `intercept on` (which blocks ALL requests globally), breakpoint rules
   only pause matching URLs — other traffic flows normally.
-- After pause: `flowmock flows --paused` to find it, `flowmock mock <id> ...` to
-  edit, `flowmock resume <id>` to release, `flowmock abort <id>` to cancel.
+- **Verified end-to-end** (pause → mock → resume → client receives mocked response ✅).
+- Full interaction flow:
+  ```
+  flowmock breakpoint add 'api/game'         # add rule (persistent)
+  # ask user to trigger request in app
+  flowmock flows --paused                    # find the paused flow
+  flowmock decode <id>                       # inspect current data
+  flowmock mock <id> game.name MockedGame     # modify field
+  flowmock resume <id>                       # release → client gets mocked response
+  # or: flowmock abort <id>                  # cancel → client gets error
+  flowmock breakpoint off                    # clear all breakpoint rules when done
+  ```
 - `flowmock breakpoint off` clears all breakpoint rules.
 
 **Step 4 — Execute:**
-- Patch single-shot (intercept path):
+- Patch single-shot (**recommended: breakpoint**, per-URL, doesn't block other traffic):
+  ```
+  flowmock breakpoint add '<url_regex>'
+  # ask user to trigger the request in app
+  flowmock flows --paused   # find the paused flow
+  flowmock mock <id> <path> <value>
+  flowmock resume <id>
+  flowmock breakpoint off   # clear when done
+  ```
+- Patch single-shot (alternative: intercept, blocks ALL traffic globally):
   ```
   flowmock intercept on
   # ask user to trigger the request in app
@@ -177,7 +196,7 @@ flowmock skill list
 flowmock skill uninstall [--agent <name>]
 flowmock update [--check]
 flowmock version
-flowmock start / stop / restart
+flowmock start / stop / restart             # start: background daemon, non-blocking
 flowmock agent-doc                          # print this guide
 ```
 
