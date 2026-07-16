@@ -1,4 +1,4 @@
-# mitmproxy-mock
+# flowmock
 
 mitmproxy 替代 Charles 抓包查看/修改 **protobuf + JSON** 数据，专为 AI agent 工作流设计。
 
@@ -10,49 +10,108 @@ addon 自动识别协议（按 Charles Protocol Buffers 自描述规则：Conten
 - **JSON 解码**：原生 `json.loads`
 - **统一 dict 化**：PB 和 JSON 都成 dict，操作方式一致
 - **双向编码**：dict → PB(`ParseDict`+`SerializeToString`) / dict → JSON，支持 delimited 列表
-- **两种 mock**：规则持续（response hook 实时改）+ 单条实时（mock + intercept/resume/replay）
+- **Charles 式 mock**：
+  - `map-local`：整 body 替换（支持 raw 文件 或 dict→PB 自动 encode）
+  - `map-remote`：请求重定向（完整 URL 替换 / regex 部分替换）
+  - `breakpoint`：per-URL 暂停（规则式，不再全局阻塞）
+  - `patch`：按 path 改字段（原有能力）
+- **持久化规则**：rules add/del 实时写回 rules.yaml，重启不丢
 - **control API**（:9090）+ **CLI** + **SKILL.md**，多 agent 通用
 
-## 一次性安装
+## 安装
+
+### 一行安装（oh-my-zsh 式）
 ```bash
-brew install python@3.13
-cd ~/Projects/mitmproxy-mock
-/opt/homebrew/bin/python3.13 -m venv .venv
-.venv/bin/pip install mitmproxy protobuf requests
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/master/install.sh)"
+```
+
+### 本地安装（调试用）
+```bash
+git clone https://github.com/zztmercury/flowmock.git
+cd flowmock
+./install.sh
+```
+
+install.sh 只负责部署 CLI（venv + 软链 + PATH）。
+安装 skill、检测更新等通过 CLI 子命令：
+```bash
+flowmock skill install     # 安装 SKILL.md 到 agent skill 目录
+flowmock doctor            # 环境健康检查
+flowmock update            # 自更新
 ```
 
 ## 启动
 ```bash
-./start.sh                      # 起 mitmweb + addon + adb reverse + 设备代理
+flowmock start             # 起 mitmweb + addon + adb reverse + 设备代理
 ```
 首次按提示装 CA 证书（用户证书：设备访问 http://mitm.it；系统证书见 mitmproxy 官方文档）。
 
 ## CLI（AI agent 用）
 ```bash
-mitmproxy-mock flows                       # 列 flow + 协议标签
-mitmproxy-mock decode <id>                 # 解码 dict
-mitmproxy-mock mock <id> game.name 测试     # 单条改
-mitmproxy-mock rules add 'api/game' game.name 测试   # 持续规则
-mitmproxy-mock agent-doc                   # 输出 agent 使用说明
+# 查看
+flowmock flows [--filter <regex>] [--paused]  # 列 flow + 协议标签 + 暂停标记
+flowmock decode <id> [--original]              # 解码 dict（--original 看原始响应）
+flowmock flows clear                          # 清空 flow_store
+
+# Mock — patch（按 path 改字段）
+flowmock mock <id> game.name 测试              # 单条改
+flowmock rules add 'api/game' game.name 测试   # 持续规则
+
+# Mock — map-local（整 body 替换，Charles 式）
+flowmock map-local add 'api/game' ./mock.json  # raw 文件替换
+flowmock map-local add 'api/game' --data '{"game":{"name":"test"}}'  # dict→PB encode
+flowmock map-local list / del <id>
+
+# Mock — map-remote（请求重定向）
+flowmock map-remote add 'api.test.com' 'http://mock-server.com'  # 完整 URL 替换
+flowmock map-remote add 'api/test' 'api/mock' --regex            # regex 部分替换
+flowmock map-remote list / del <id>
+
+# Mock — breakpoint（per-URL 暂停）
+flowmock breakpoint add 'api/game'             # 加断点规则
+flowmock breakpoint list / del <id> / off
+
+# 暂停后操作
+flowmock mock <id> game.name 测试              # 改字段
+flowmock resume <id>                           # 放行
+flowmock abort <id>                            # 取消（给客户端发错误）
+
+# 规则管理
+flowmock rules list [--type <type>]            # 列规则（按类型过滤）
+flowmock rules del <id>                        # 按 id 删
+flowmock rules save / reload                   # 手动持久化/重载
+
+# 工具维护
+flowmock skill install / list / uninstall      # 安装/列出/卸载 SKILL.md
+flowmock update [--check]                      # 检测/执行自更新
+flowmock version                               # 版本号
+flowmock doctor                                # 全链路健康检查
+flowmock start / stop / restart                # 启动/停止/重启
 ```
 
 ## 接入 agent
-- **opencode**：SKILL.md 软链到 `~/.agents/skills/mitmproxy-mock/SKILL.md` 自动加载
-- **其他 agent**：跑 `mitmproxy-mock agent-doc` 取使用说明注入 system prompt
+- **opencode**：`flowmock skill install` 自动装到 `~/.agents/skills/flowmock/`
+- **Claude Code**：同上，自动检测 `~/.claude/skills/`
+- **其他 agent**：跑 `flowmock agent-doc` 取使用说明注入 system prompt，或 `flowmock skill install --dir <path>`
 
 ## 文件
-- `tap_pb_mock.py` — mitmproxy addon（协议识别/PB/JSON/dict/双向/mock/control API/contentview）
-- `mitmproxy-mock` — CLI（纯 stdlib，调 control API）
-- `start.sh` — 一键启动
+- `flowmock_addon.py` — mitmproxy addon（协议识别/PB/JSON/dict/双向/mock/control API/contentview）
+- `flowmock` — CLI（纯 stdlib，调 control API + 工具维护）
+- `install.sh` — oh-my-zsh 式一键安装
+- `start.sh` — 启动脚本（adb reverse + 设备代理 + mitmweb）
 - `SKILL.md` — agent 文档（与 CLI `agent-doc` 同源）
-- `rules.yaml` — 持久化 mock 规则（启动时自动加载）
-- `test_pb_engine.py` / `test_server.py` — 测试
+- `rules.yaml` — 持久化 mock 规则（启动时自动加载，运行时实时写回）
+- `test_engine.py` / `test_server.py` — 测试
 
 ## 与 Charles 对比
-| | Charles | mitmproxy-mock |
+| | Charles | flowmock |
 |---|---|---|
 | PB schema | `.desc`/`.proto` | `.desc`（同 Charles 规则） |
 | PB 查看 | Text/Structured Viewer | contentview + control API |
 | PB 修改 | Structured 双击改 | CLI path+value（AI 可操作） |
 | JSON | 原生 | 原生 |
+| Map Local | 整文件替换 | 整文件 + dict→PB encode |
+| Map Remote | URL 映射 | 完整 URL + regex 替换 |
+| Breakpoint | per-URL 暂停 | per-URL 规则式暂停 |
+| 持久化规则 | 启动时配置 | rules.yaml 实时写回 |
 | AI 接入 | 无 | CLI + agent-doc，多框架通用 |

@@ -1,0 +1,637 @@
+#!/usr/bin/env python3
+"""flowmock - CLI to operate the flowmock addon's control API + tool maintenance.
+
+Design: pure stdlib (urllib/subprocess/os), runs on system python3 (no venv needed).
+`agent-doc` and `help` read SKILL.md (single source of truth) so any agent
+framework (opencode/Claude Code/custom) gets consistent instructions.
+"""
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+HOST = os.environ.get("FLOWMOCK_HOST", "127.0.0.1")
+PORT = os.environ.get("FLOWMOCK_PORT", "9090")
+BASE = f"http://{HOST}:{PORT}"
+
+
+def _req(method, path, body=None):
+    url = BASE + path
+    data = json.dumps(body).encode() if body is not None else None
+    r = urllib.request.Request(url, data=data, method=method)
+    if data is not None:
+        r.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(r, timeout=15) as resp:
+            raw = resp.read().decode()
+            return json.loads(raw) if raw else None
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode()
+        try:
+            return json.loads(raw)
+        except Exception:
+            return {"error": f"HTTP {e.code}: {raw}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _parse_value(s):
+    """Parse a CLI value: try JSON first (int/bool/null/object/array), else string."""
+    try:
+        return json.loads(s)
+    except Exception:
+        return s
+
+
+def _print(obj):
+    if obj is None:
+        return
+    if isinstance(obj, (dict, list)):
+        print(json.dumps(obj, ensure_ascii=False, indent=2))
+    else:
+        print(obj)
+
+
+def _skill_doc():
+    """Load the agent guide from SKILL.md (single source), strip frontmatter."""
+    skill = os.path.join(os.path.dirname(os.path.realpath(__file__)), "SKILL.md")
+    try:
+        text = open(skill).read()
+    except Exception as e:
+        return f"(could not read SKILL.md: {e})\nRun a subcommand, e.g. `mitmproxy-mock flows`."
+    if text.startswith("---"):
+        end = text.find("---", 3)
+        if end != -1:
+            text = text[end + 3:].lstrip("\n")
+    return text
+
+
+def cmd_flows(args):
+    # parse: --filter <regex> / --url <regex> / --paused / clear
+    if args and args[0] == "clear":
+        _print(_req("DELETE", "/flows"))
+        return
+    filter_val = None
+    paused = False
+    i = 0
+    while i < len(args):
+        if args[i] == "--filter" and i + 1 < len(args):
+            filter_val = args[i + 1]; i += 2
+        elif args[i] == "--url" and i + 1 < len(args):
+            filter_val = args[i + 1]; i += 2
+        elif args[i] == "--paused":
+            paused = True; i += 1
+        else:
+            i += 1
+    params = []
+    if filter_val:
+        params.append(f"filter={filter_val}")
+    if paused:
+        params.append("paused=1")
+    qs = "?" + "&".join(params) if params else ""
+    data = _req("GET", f"/flows{qs}")
+    if isinstance(data, list):
+        for f in data:
+            paused_mark = " [paused]" if f.get("paused") else ""
+            line = f"{f.get('id','')[:8]}  {f.get('method',''):6} {f.get('status','')}  [{f.get('protocol','?')}]  {f.get('url','')}{paused_mark}"
+            if f.get("error"):
+                line += f"  ERR:{f['error']}"
+            print(line)
+        print(f"-- {len(data)} flows --")
+    else:
+        _print(data)
+
+
+def cmd_decode(args):
+    original = False
+    fid = None
+    for a in args:
+        if a == "--original":
+            original = True
+        elif not fid:
+            fid = a
+    if not fid:
+        print("usage: flowmock decode <id> [--original]")
+        sys.exit(2)
+    qs = "?original=1" if original else ""
+    _print(_req("GET", f"/flows/{fid}{qs}"))
+
+
+def cmd_mock(args):
+    value = _parse_value(args.value)
+    res = _req("POST", f"/flows/{args.id}/mock", {"path": args.path, "value": value})
+    _print(res)
+
+
+def cmd_abort(args):
+    fid = args[0] if args else None
+    if not fid:
+        print("usage: flowmock abort <id>")
+        sys.exit(2)
+    _print(_req("POST", f"/flows/{fid}/abort", {}))
+
+
+def cmd_rules_add(args):
+    value = _parse_value(args.value)
+    body = {"url_pattern": args.url_pattern, "path": args.path, "value": value}
+    if args.protocol:
+        body["protocol"] = args.protocol
+    _print(_req("POST", "/rules", body))
+
+
+def cmd_rules_list(args):
+    _print(_req("GET", "/rules"))
+
+
+def cmd_rules_del(args):
+    _print(_req("DELETE", f"/rules/{args.index}"))
+
+
+def cmd_rules_save(args):
+    _print(_req("POST", "/rules/save", {}))
+
+
+def cmd_rules_reload(args):
+    _print(_req("POST", "/rules/reload", {}))
+
+
+def cmd_map_local(args):
+    if not args:
+        _print(_req("GET", "/rules?type=map_local"))
+        return
+    sub = args[0]
+    if sub == "list":
+        _print(_req("GET", "/rules?type=map_local"))
+    elif sub == "add" and len(args) >= 2:
+        body = {"url_pattern": args[1], "type": "map_local"}
+        i = 2
+        while i < len(args):
+            if args[i] == "--data" and i + 1 < len(args):
+                body["source"] = "data"
+                body["data"] = _parse_value(args[i + 1])
+                i += 2
+            elif args[i] == "--desc" and i + 1 < len(args):
+                body["desc"] = args[i + 1]; i += 2
+            elif args[i] == "--messageType" and i + 1 < len(args):
+                body["messageType"] = args[i + 1]; i += 2
+            elif args[i] == "--delimited":
+                body["delimited"] = True; i += 1
+            elif args[i] == "--status" and i + 1 < len(args):
+                body["status"] = int(args[i + 1]); i += 2
+            elif args[i] == "--header" and i + 1 < len(args):
+                hdr = args[i + 1]
+                if ":" in hdr:
+                    k, v = hdr.split(":", 1)
+                    body.setdefault("headers", {})[k.strip()] = v.strip()
+                i += 2
+            elif not body.get("file_path") and not body.get("data"):
+                body["source"] = "file"
+                body["file_path"] = args[i]
+                i += 1
+            else:
+                i += 1
+        _print(_req("POST", "/rules", body))
+    elif sub == "del" and len(args) >= 2:
+        _print(_req("DELETE", f"/rules/{args[1]}"))
+    else:
+        print("usage: flowmock map-local add <url_regex> <file_path> [--status N] [--header K:V]")
+        print("       flowmock map-local add <url_regex> --data '<json>' [--desc <url>] [--messageType <name>] [--delimited]")
+        print("       flowmock map-local list")
+        print("       flowmock map-local del <id>")
+        sys.exit(2)
+
+
+def cmd_map_remote(args):
+    if not args:
+        _print(_req("GET", "/rules?type=map_remote"))
+        return
+    sub = args[0]
+    if sub == "list":
+        _print(_req("GET", "/rules?type=map_remote"))
+    elif sub == "add" and len(args) >= 3:
+        body = {
+            "url_pattern": args[1],
+            "type": "map_remote",
+            "replacement": args[2],
+            "is_regex": "--regex" in args,
+        }
+        _print(_req("POST", "/rules", body))
+    elif sub == "del" and len(args) >= 2:
+        _print(_req("DELETE", f"/rules/{args[1]}"))
+    else:
+        print("usage: flowmock map-remote add <url_regex> <new_url> [--regex]")
+        print("       flowmock map-remote list")
+        print("       flowmock map-remote del <id>")
+        sys.exit(2)
+
+
+def cmd_breakpoint(args):
+    if not args:
+        _print(_req("GET", "/rules?type=breakpoint"))
+        return
+    sub = args[0]
+    if sub == "list":
+        _print(_req("GET", "/rules?type=breakpoint"))
+    elif sub == "add" and len(args) >= 2:
+        body = {"url_pattern": args[1], "type": "breakpoint", "phase": "response"}
+        _print(_req("POST", "/rules", body))
+    elif sub == "del" and len(args) >= 2:
+        _print(_req("DELETE", f"/rules/{args[1]}"))
+    elif sub == "off":
+        rules = _req("GET", "/rules?type=breakpoint")
+        if isinstance(rules, list):
+            for r in rules:
+                _req("DELETE", f"/rules/{r.get('id')}")
+            print(f"Cleared {len(rules)} breakpoints.")
+    else:
+        print("usage: flowmock breakpoint add <url_regex>")
+        print("       flowmock breakpoint list")
+        print("       flowmock breakpoint del <id>")
+        print("       flowmock breakpoint off")
+        sys.exit(2)
+
+
+def cmd_replay(args):
+    _print(_req("POST", f"/flows/{args.id}/replay", {}))
+
+
+def cmd_resume(args):
+    _print(_req("POST", f"/flows/{args.id}/resume", {}))
+
+
+def cmd_intercept(args):
+    if not args.enable:
+        _print(_req("POST", "/intercept", {"enable": False}))
+        return
+    body = {"enable": True}
+    if args.filter:
+        body["filter"] = args.filter
+    _print(_req("POST", "/intercept", body))
+
+
+def cmd_health(args):
+    _print(_req("GET", "/health"))
+
+
+def cmd_agent_doc(args):
+    print(_skill_doc())
+
+
+# ---------------- tool maintenance commands ----------------
+
+def _project_dir():
+    """Find project directory by resolving the CLI script's realpath."""
+    return os.path.dirname(os.path.realpath(__file__))
+
+
+def _skill_target_dirs(agent=None):
+    """Return list of (agent_name, dir) for skill installation targets."""
+    home = os.path.expanduser("~")
+    candidates = []
+    agent_map = {
+        "opencode": [
+            os.path.join(home, ".agents", "skills", "flowmock"),
+            os.path.join(home, ".config", "opencode", "skills", "flowmock"),
+        ],
+        "claude": [
+            os.path.join(home, ".claude", "skills", "flowmock"),
+        ],
+    }
+    if agent and agent != "all":
+        dirs = agent_map.get(agent, [])
+        return [(agent, d) for d in dirs]
+    for name, dirs in agent_map.items():
+        for d in dirs:
+            candidates.append((name, d))
+    return candidates
+
+
+def cmd_skill(args):
+    sub = args[0] if args else "list"
+    project = _project_dir()
+    skill_src = os.path.join(project, "SKILL.md")
+
+    if sub == "install":
+        agents = []
+        custom_dir = None
+        i = 1
+        while i < len(args):
+            if args[i] == "--agent" and i + 1 < len(args):
+                agents = args[i + 1].split(",")
+                i += 2
+            elif args[i] == "--dir" and i + 1 < len(args):
+                custom_dir = args[i + 1]
+                i += 2
+            else:
+                i += 1
+        if not agents and not custom_dir:
+            agents = ["all"]
+        targets = []
+        if custom_dir:
+            targets.append(("custom", custom_dir))
+        else:
+            for a in agents:
+                targets.extend(_skill_target_dirs(a))
+        installed = []
+        for agent_name, target_dir in targets:
+            parent = os.path.dirname(target_dir)
+            if not os.path.isdir(parent):
+                continue
+            os.makedirs(target_dir, exist_ok=True)
+            target = os.path.join(target_dir, "SKILL.md")
+            if os.path.islink(target) or os.path.exists(target):
+                os.remove(target)
+            os.symlink(skill_src, target)
+            installed.append(f"{agent_name}: {target}")
+        if installed:
+            print("Installed skill symlinks:")
+            for line in installed:
+                print(f"  {line}")
+        else:
+            print("No agent skill directories found. Use --dir <path> to specify.")
+
+    elif sub == "list":
+        targets = _skill_target_dirs("all")
+        found = []
+        for agent_name, target_dir in targets:
+            target = os.path.join(target_dir, "SKILL.md")
+            if os.path.islink(target):
+                src = os.readlink(target)
+                found.append(f"{agent_name}: {target} -> {src}")
+        if found:
+            print("Installed skill symlinks:")
+            for line in found:
+                print(f"  {line}")
+        else:
+            print("No skill symlinks found. Run: flowmock skill install")
+
+    elif sub == "uninstall":
+        agents = []
+        i = 1
+        while i < len(args):
+            if args[i] == "--agent" and i + 1 < len(args):
+                agents = args[i + 1].split(",")
+                i += 2
+            else:
+                i += 1
+        if not agents:
+            agents = ["all"]
+        targets = []
+        for a in agents:
+            targets.extend(_skill_target_dirs(a))
+        removed = []
+        for agent_name, target_dir in targets:
+            target = os.path.join(target_dir, "SKILL.md")
+            if os.path.islink(target) or os.path.exists(target):
+                os.remove(target)
+                try:
+                    os.rmdir(target_dir)
+                except OSError:
+                    pass
+                removed.append(f"{agent_name}: {target}")
+        if removed:
+            print("Removed skill symlinks:")
+            for line in removed:
+                print(f"  {line}")
+        else:
+            print("No skill symlinks to remove.")
+
+    else:
+        print("usage: flowmock skill [install|list|uninstall] [--agent <name>] [--dir <path>]")
+        sys.exit(2)
+
+
+def cmd_update(args):
+    check_only = "--check" in args
+    project = _project_dir()
+    if not os.path.isdir(os.path.join(project, ".git")):
+        print("Not a git repo. Update via: git clone + install.sh")
+        return
+    try:
+        r = subprocess.run(
+            ["git", "fetch", "--dry-run"],
+            cwd=project, capture_output=True, text=True, timeout=30,
+        )
+        if r.stdout.strip() or r.stderr.strip():
+            if check_only:
+                print("Update available.")
+                return
+            print("Updating...")
+            subprocess.run(["git", "pull", "--ff-only"], cwd=project, check=True)
+            venv = os.path.join(project, ".venv")
+            if os.path.isdir(venv):
+                pip = os.path.join(venv, "bin", "pip")
+                subprocess.run([pip, "install", "--upgrade", "-q",
+                                "mitmproxy", "protobuf", "requests"], check=True)
+            print("Updated successfully.")
+        else:
+            print("Already up to date.")
+    except subprocess.TimeoutExpired:
+        print("git fetch timed out.")
+    except subprocess.CalledProcessError as e:
+        print(f"Update failed: {e}")
+
+
+def cmd_version(args):
+    project = _project_dir()
+    try:
+        r = subprocess.run(
+            ["git", "describe", "--tags", "--always"],
+            cwd=project, capture_output=True, text=True, timeout=5,
+        )
+        ver = r.stdout.strip()
+        if ver:
+            print(f"flowmock {ver}")
+        else:
+            print("flowmock (dev)")
+    except Exception:
+        print("flowmock (unknown)")
+
+
+def cmd_doctor(args):
+    project = _project_dir()
+    issues = []
+
+    # 1. Python
+    py = sys.executable
+    print(f"  Python:     {py} ({sys.version.split()[0]})")
+
+    # 2. venv
+    venv = os.path.join(project, ".venv")
+    mitmweb = os.path.join(venv, "bin", "mitmweb")
+    if os.path.isfile(mitmweb):
+        print(f"  venv:       OK ({venv})")
+    else:
+        print(f"  venv:       MISSING — run: ./install.sh")
+        issues.append("venv")
+
+    # 3. CLI in PATH
+    cli_in_path = shutil.which("flowmock") is not None
+    if cli_in_path:
+        print(f"  CLI:        OK (in PATH)")
+    else:
+        print(f"  CLI:        NOT in PATH — run: ./install.sh")
+        issues.append("cli")
+
+    # 4. skill symlinks
+    targets = _skill_target_dirs("all")
+    skill_ok = False
+    for agent_name, target_dir in targets:
+        target = os.path.join(target_dir, "SKILL.md")
+        if os.path.islink(target):
+            print(f"  skill:      OK ({agent_name}: {target_dir})")
+            skill_ok = True
+            break
+    if not skill_ok:
+        print(f"  skill:      NOT installed — run: flowmock skill install")
+        issues.append("skill")
+
+    # 5. addon running
+    health = _req("GET", "/health")
+    if isinstance(health, dict) and health.get("ok"):
+        flow_count = health.get("flow_count", 0)
+        print(f"  addon:      OK (flow_count={flow_count})")
+        if flow_count == 0:
+            print(f"  traffic:    NO traffic — operate app to trigger requests")
+    else:
+        print(f"  addon:      NOT running — run: flowmock start")
+        issues.append("addon")
+
+    print()
+    if issues:
+        print(f"  Issues: {', '.join(issues)}")
+        sys.exit(1)
+    else:
+        print("  All checks passed.")
+
+
+def cmd_start(args):
+    project = _project_dir()
+    start_sh = os.path.join(project, "start.sh")
+    if not os.path.isfile(start_sh):
+        print(f"start.sh not found at {start_sh}")
+        sys.exit(1)
+    os.execv(start_sh, [start_sh] + list(args))
+
+
+def cmd_stop(args):
+    r = subprocess.run(
+        ["pkill", "-f", "mitmweb.*flowmock_addon"],
+        capture_output=True,
+    )
+    if r.returncode == 0:
+        print("Stopped.")
+    else:
+        # fallback: try pkill mitmweb
+        r2 = subprocess.run(["pkill", "-f", "mitmweb"], capture_output=True)
+        print("Stopped." if r2.returncode == 0 else "Not running.")
+
+
+def cmd_restart(args):
+    cmd_stop([])
+    import time
+    time.sleep(1)
+    cmd_start([])
+
+
+def main():
+    cmds = [
+        "flows", "decode", "mock", "rules", "replay", "resume",
+        "intercept", "health", "agent-doc",
+        "map-local", "map-remote", "breakpoint", "abort",
+        "skill", "update", "version", "doctor",
+        "start", "stop", "restart",
+    ]
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help", "help"):
+        print(_skill_doc())
+        print("\n## Quick reference")
+        for c in cmds:
+            print(f"  flowmock {c} ...")
+        sys.exit(0)
+
+    cmd = sys.argv[1]
+    args = sys.argv[2:]
+
+    if cmd == "flows":
+        cmd_flows(args)
+    elif cmd == "decode" and args:
+        cmd_decode(args)
+    elif cmd == "mock" and len(args) >= 3:
+        cmd_mock(type("A", (), {"id": args[0], "path": args[1], "value": args[2]})())
+    elif cmd == "rules":
+        if not args:
+            cmd_rules_list(None)
+        elif args[0] == "add" and len(args) >= 4:
+            proto = None
+            rest = args[3:]
+            if rest and rest[0] == "--protocol" and len(rest) >= 2:
+                proto = rest[1]
+            cmd_rules_add(type("A", (), {
+                "url_pattern": args[1], "path": args[2], "value": args[3],
+                "protocol": proto,
+            })())
+        elif args[0] == "list":
+            cmd_rules_list(None)
+        elif args[0] == "del" and len(args) >= 2:
+            cmd_rules_del(type("A", (), {"index": args[1]})())
+        elif args[0] == "save":
+            cmd_rules_save(args[1:])
+        elif args[0] == "reload":
+            cmd_rules_reload(args[1:])
+        else:
+            print("usage: flowmock rules add <url_regex> <path> <value> [--protocol pb|json]")
+            print("       flowmock rules list")
+            print("       flowmock rules del <id>")
+            print("       flowmock rules save")
+            print("       flowmock rules reload")
+            sys.exit(2)
+    elif cmd == "map-local":
+        cmd_map_local(args)
+    elif cmd == "map-remote":
+        cmd_map_remote(args)
+    elif cmd == "breakpoint":
+        cmd_breakpoint(args)
+    elif cmd == "abort" and args:
+        cmd_abort(args)
+    elif cmd == "replay" and args:
+        cmd_replay(type("A", (), {"id": args[0]})())
+    elif cmd == "resume" and args:
+        cmd_resume(type("A", (), {"id": args[0]})())
+    elif cmd == "intercept":
+        if not args or args[0] not in ("on", "off"):
+            print("usage: flowmock intercept on [--filter <expr>]")
+            print("       flowmock intercept off")
+            sys.exit(2)
+        enable = args[0] == "on"
+        flt = None
+        if enable and len(args) >= 3 and args[1] == "--filter":
+            flt = args[2]
+        cmd_intercept(type("A", (), {"enable": enable, "filter": flt})())
+    elif cmd == "health":
+        cmd_health(None)
+    elif cmd == "agent-doc":
+        cmd_agent_doc(None)
+    elif cmd == "skill":
+        cmd_skill(args)
+    elif cmd == "update":
+        cmd_update(args)
+    elif cmd == "version":
+        cmd_version(args)
+    elif cmd == "doctor":
+        cmd_doctor(args)
+    elif cmd == "start":
+        cmd_start(args)
+    elif cmd == "stop":
+        cmd_stop(args)
+    elif cmd == "restart":
+        cmd_restart(args)
+    else:
+        print(f"unknown command: {cmd}\nrun `flowmock help`")
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

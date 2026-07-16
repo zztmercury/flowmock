@@ -45,10 +45,10 @@ echo "=== mitmweb starting ==="
 echo "  proxy   : 127.0.0.1:$PROXY_PORT"
 echo "  web UI  : http://127.0.0.1:$WEB_PORT"
 echo "  control : http://127.0.0.1:$CONTROL_PORT"
-echo "  CLI     : mitmproxy-mock flows"
+echo "  CLI     : flowmock flows"
 echo
 
-exec "$VENV/bin/mitmweb" -s "$DIR/tap_pb_mock.py" \
+exec "$VENV/bin/mitmweb" -s "$DIR/flowmock_addon.py" \
   --mode "regular@127.0.0.1:$PROXY_PORT" \
   --web-port "$WEB_PORT" \
-  --set "tap_pb_control_port=$CONTROL_PORT"
+  --set "flowmock_control_port=$CONTROL_PORT"

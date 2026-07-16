@@ -1,97 +1,184 @@
 ---
-name: mitmproxy-mock
-description: Capture and mock protobuf (Charles self-describing rule) / JSON responses via mitmproxy. The addon auto-detects protocol and decodes to dict; AI patches fields by path. Trigger when user says "抓包","mock 数据","改接口返回","看 PB/JSON 响应","mitmproxy-mock","改 protobuf","改返回数据","造测试数据".
+name: flowmock
+description: Capture and mock protobuf (Charles self-describing rule) / JSON responses via mitmproxy. The addon auto-detects protocol and decodes to dict; AI patches fields by path. Charles-style map local/remote/breakpoint. Trigger when user says "抓包","mock 数据","改接口返回","看 PB/JSON 响应","flowmock","改 protobuf","改返回数据","造测试数据","map local","map remote","breakpoint".
 ---
 
-# mitmproxy-mock — Agent Guide
+# flowmock — Agent Guide
 
 A mitmproxy addon auto-detects the protocol (protobuf or JSON) of every captured
 HTTP response and decodes it into a plain **dict/list**. You operate it via the
-`mitmproxy-mock` CLI. **You never touch protobuf wire format** — you read/modify
+`flowmock` CLI. **You never touch protobuf wire format** — you read/modify
 dict fields by `path`, exactly like editing JSON. PB and JSON are identical at
 the operation layer.
 
 ## 1. Prerequisites — check FIRST, every time
 
-Run `mitmproxy-mock health` before anything else. Interpret the result:
+Run `flowmock doctor` before anything else. It checks the full chain:
+Python / venv / CLI / skill / addon / traffic. Interpret the result:
 
 | result | meaning | action |
 |---|---|---|
-| connection refused / error | mitmproxy not running | Ask user to run `~/Projects/mitmproxy-mock/start.sh`. **Stop** until they confirm. |
-| `{"ok": true, "flow_count": 0}` | addon up but no traffic | Proxy/cert not ready OR app idle. Ask user to operate the app (open a page / search) to trigger traffic, then re-check. If still 0 after app activity → cert not installed or device proxy not set (guide: device visits http://mitm.it to install CA; `adb reverse tcp:8080 tcp:8080` + `adb shell settings put global http_proxy 127.0.0.1:8080`). |
-| `{"ok": true, "flow_count": N>0}` | ready | proceed to workflow |
+| addon: NOT running | mitmproxy not running | Ask user to run `flowmock start`. **Stop** until they confirm. |
+| addon: OK, traffic: NO traffic | addon up but no traffic | Proxy/cert not ready OR app idle. Ask user to operate the app (open a page / search) to trigger traffic, then re-check. If still 0 after app activity → cert not installed or device proxy not set (guide: device visits http://mitm.it to install CA; `adb reverse tcp:8080 tcp:8080` + `adb shell settings put global http_proxy 127.0.0.1:8080`). |
+| addon: OK (flow_count=N>0) | ready | proceed to workflow |
 
-Never assume mitmproxy is running — always verify with `health` first.
+Never assume mitmproxy is running — always verify with `doctor` first.
 
 ## 2. Standard workflow — follow this order
 
 **Step 1 — Find the target flow:**
 ```
-mitmproxy-mock flows
+flowmock flows
 ```
-Output: `<id>  METHOD STATUS [protocol] URL [ERR]`. Note the `id` (first 8 chars
+Output: `<id>  METHOD STATUS [protocol] URL [paused] [ERR]`. Note the `id` (first 8 chars
 accepted) and `protocol` (`protobuf`/`json`) of the flow you want to mock.
 - Filter by eye: look for the URL path matching the feature you're testing.
 - `[protobuf]` = PB interface (decoded via Charles desc rule); `[json]` = JSON.
+- `[paused]` = flow is intercepted by a breakpoint rule — waiting for your action.
 - `ERR:...` = that flow failed to decode — see Troubleshooting.
+- Use `--filter <regex>` to narrow down: `flowmock flows --filter api/game`
 
 **Step 2 — Inspect the decoded structure:**
 ```
-mitmproxy-mock decode <id>
+flowmock decode <id>
 ```
 Returns `{protocol, messageType, desc, content_type, data: {...}}`. Read `data`
 to find the exact field `path` you want to change. PB `data` may contain
 `@type` (a google.protobuf.Any expanded into a concrete message) — navigate into
 it like normal nested dict.
+- Use `--original` to see the raw response before any mock rules were applied:
+  `flowmock decode <id> --original`
 
 **Step 3 — Decide mock mode:**
-- **One specific request, one-time change** → single-shot (`mock`).
-  - But: a single-shot `mock` on an already-completed flow does NOT reach the
-    client. To actually deliver it, either:
-    - `intercept on` BEFORE the user triggers the request → flow pauses →
-      `mock <id> ...` → `resume <id>`, OR
-    - `mock <id> ...` then `replay <id>` (re-issues the request with modified response).
-- **All future matching requests changed persistently** → continuous rule
-  (`rules add`). This is usually what you want for building a mocked test env.
+
+Four mock modes, all Charles-style:
+
+### 2.1 Patch — modify specific fields by path (one-time or persistent)
+One specific request, one-time change → single-shot (`mock`):
+- A single-shot `mock` on an already-completed flow does NOT reach the
+  client. To actually deliver it, either:
+  - `intercept on` BEFORE the user triggers the request → flow pauses →
+    `mock <id> ...` → `resume <id>`, OR
+  - `mock <id> ...` then `replay <id>` (re-issues the request with modified response).
+- All future matching requests changed persistently → continuous rule (`rules add`).
+
+### 2.2 Map Local — replace entire response body (Charles-style)
+```
+flowmock map-local add '<url_regex>' <file_path> [--status 200] [--header "K:V"]
+flowmock map-local add '<url_regex>' --data '<json>' [--desc <url>] [--messageType <name>] [--delimited]
+```
+- **File mode** (Charles-compatible): local file's raw bytes become the response body.
+- **Dict mode** (PB enhancement): provide a JSON dict, auto-encode to PB using
+  the response's `desc`/`messageType` (auto-detected from flow_store, or
+  specified via `--desc`/`--messageType`). This is the key advantage over Charles —
+  you never write PB wire format.
+- `--status` overrides HTTP status code. `--header "K:V"` adds/overrides headers.
+
+### 2.3 Map Remote — redirect requests to another URL (Charles-style)
+```
+flowmock map-remote add '<url_regex>' <new_url>           # full URL replacement
+flowmock map-remote add '<url_regex>' <replacement> --regex  # regex partial replacement
+```
+- Full URL mode: matching requests are redirected to `<new_url>` entirely.
+- Regex mode: `re.sub(url_regex, replacement, url)` — flexible partial replacement.
+- Useful for pointing test environment requests to a mock server.
+
+### 2.4 Breakpoint — per-URL pause (Charles-style, NOT global)
+```
+flowmock breakpoint add '<url_regex>'
+```
+- **Rule-based, persistent**: add once, all future matching flows auto-pause.
+- Unlike `intercept on` (which blocks ALL requests globally), breakpoint rules
+  only pause matching URLs — other traffic flows normally.
+- After pause: `flowmock flows --paused` to find it, `flowmock mock <id> ...` to
+  edit, `flowmock resume <id>` to release, `flowmock abort <id>` to cancel.
+- `flowmock breakpoint off` clears all breakpoint rules.
 
 **Step 4 — Execute:**
-- Single-shot (intercept path, recommended for one-time):
+- Patch single-shot (intercept path):
   ```
-  mitmproxy-mock intercept on
+  flowmock intercept on
   # ask user to trigger the request in app
-  mitmproxy-mock flows          # find the new (paused) flow id
-  mitmproxy-mock mock <id> <path> <value>
-  mitmproxy-mock resume <id>
-  mitmproxy-mock intercept off  # turn off when done
+  flowmock flows          # find the new (paused) flow id
+  flowmock mock <id> <path> <value>
+  flowmock resume <id>
+  flowmock intercept off  # turn off when done
   ```
-- Continuous rule:
+- Patch persistent rule:
   ```
-  mitmproxy-mock rules add '<url_regex>' <path> <value> [--protocol pb|json]
+  flowmock rules add '<url_regex>' <path> <value> [--protocol pb|json]
   ```
-  `<url_regex>` is matched with `re.search` against the full request URL. Quote
-  it. Example: `'api/game'`, `'~q /search'`-style is NOT needed — just a substring/regex of the URL.
+- Map Local: see §2.2
+- Map Remote: see §2.3
+- Breakpoint: see §2.4
 
 **Step 5 — Verify:**
 ```
-mitmproxy-mock decode <id>      # shows the (mocked) decoded data
-mitmproxy-mock rules list       # confirm rules active
+flowmock decode <id>              # shows the (mocked) decoded data
+flowmock decode <id> --original   # shows original (pre-mock) for comparison
+flowmock rules list               # confirm rules active
+flowmock rules list --type map_local   # filter by type
 ```
 Or ask user to check the app screen.
 
 ## 3. Commands reference
+
+### Capture & mock
 ```
-mitmproxy-mock health                             # prerequisite check (ok + flow_count)
-mitmproxy-mock flows                              # list flows + protocol tag
-mitmproxy-mock decode <id>                        # full decoded dict + meta
-mitmproxy-mock mock <id> <path> <value>           # patch ONE flow (single-shot)
-mitmproxy-mock rules add <url_regex> <path> <value> [--protocol pb|json]
-mitmproxy-mock rules list
-mitmproxy-mock rules del <index>
-mitmproxy-mock intercept on [--filter <expr>]     # pause flows for editing
-mitmproxy-mock intercept off
-mitmproxy-mock resume <id>                        # release intercepted flow
-mitmproxy-mock replay <id>                        # replay a flow
-mitmproxy-mock agent-doc                          # print this guide
+flowmock health                             # quick addon check (ok + flow_count)
+flowmock doctor                             # full-chain health check
+flowmock flows [--filter <regex>] [--paused]  # list flows + protocol + paused tag
+flowmock flows clear                        # clear all captured flows
+flowmock decode <id> [--original]           # full decoded dict + meta
+flowmock mock <id> <path> <value>           # patch ONE flow (single-shot)
+flowmock replay <id>                        # replay a flow
+flowmock resume <id>                        # release intercepted/breakpointed flow
+flowmock abort <id>                         # kill flow (send error to client)
+flowmock intercept on [--filter <expr>]     # pause ALL matching flows (global)
+flowmock intercept off
+```
+
+### Rules — patch type (persistent, by path)
+```
+flowmock rules add <url_regex> <path> <value> [--protocol pb|json]
+flowmock rules list [--type <type>]
+flowmock rules del <id>
+flowmock rules save                         # manually write back to rules.yaml
+flowmock rules reload                       # reload from rules.yaml
+```
+
+### Map Local (Charles-style body replacement)
+```
+flowmock map-local add <url_regex> <file_path> [--status N] [--header "K:V"]
+flowmock map-local add <url_regex> --data '<json>' [--desc <url>] [--messageType <name>] [--delimited]
+flowmock map-local list
+flowmock map-local del <id>
+```
+
+### Map Remote (Charles-style request redirect)
+```
+flowmock map-remote add <url_regex> <new_url> [--regex]
+flowmock map-remote list
+flowmock map-remote del <id>
+```
+
+### Breakpoint (Charles-style per-URL pause)
+```
+flowmock breakpoint add <url_regex>
+flowmock breakpoint list
+flowmock breakpoint del <id>
+flowmock breakpoint off                     # clear all breakpoints
+```
+
+### Tool maintenance
+```
+flowmock skill install [--agent opencode|claude|all] [--dir <path>]
+flowmock skill list
+flowmock skill uninstall [--agent <name>]
+flowmock update [--check]
+flowmock version
+flowmock start / stop / restart
+flowmock agent-doc                          # print this guide
 ```
 
 ## 4. Path & value syntax
@@ -101,6 +188,7 @@ mitmproxy-mock agent-doc                          # print this guide
   `null`, object (`{"k":"v"}`), array (`[1,2]`). Otherwise treated as string.
   In shell, quote strings: `"hello"`. For objects/arrays use single quotes
   around the JSON: `'{"k":"v"}'`.
+- Paths are **case-sensitive** — proto field names are snake_case (not camelCase).
 
 ## 5. Troubleshooting
 - **`decode` returns `error: "Couldn't find message X"`**: the .desc loaded but
@@ -116,10 +204,24 @@ mitmproxy-mock agent-doc                          # print this guide
 - **`flow_count` stays 0**: see Prerequisites — cert/proxy/app-idle.
 - **field path wrong / IndexError**: re-run `decode <id>` and copy the exact path
   from the dict structure. Paths are case-sensitive.
+- **mock returns 400 "path not found"**: the path doesn't exist in the decoded
+  data. The response includes a `hint` showing the actual data structure —
+  copy the correct path from it.
+- **map-local dict mode fails**: needs `desc` + `messageType` to encode PB.
+  Auto-detected from flow_store if the URL was captured before. If not, provide
+  `--desc <url>` and `--messageType <name>` explicitly.
+- **breakpoint blocks forever**: breakpoint rules are persistent — they pause
+  ALL future matching flows. Use `flowmock breakpoint off` to clear when done.
+- **rules not persisted**: `rules add` auto-saves to rules.yaml. If save fails
+  (permission/disk), run `flowmock rules save` manually. Check with `flowmock rules list`.
 
 ## 6. Notes
 - Control API default: http://127.0.0.1:9090 (override via
-  `MITMPROXY_MOCK_HOST` / `MITMPROXY_MOCK_PORT` env).
+  `FLOWMOCK_HOST` / `FLOWMOCK_PORT` env).
 - Continuous rules apply at capture time; `decode` shows the (possibly mocked)
-  decoded data.
+  decoded data. Use `--original` to see pre-mock data.
 - PB `delimited=true` responses decode to a JSON array; index into them with `[n]`.
+- flow_store has LRU cap (500 flows); oldest evicted when full.
+- All rule types (patch/map_local/map_remote/breakpoint) share the same rules.yaml
+  and can coexist. Execution order per request:
+  map_remote(request) → map_local(response) → breakpoint(response) → patch(response).

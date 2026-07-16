@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# flowmock install.sh — oh-my-zsh style one-line installer
+#
+# Usage:
+#   One-line:  sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/flowmock/master/install.sh)"
+#   Local:     ./install.sh
+#   Update:    ./install.sh --update
+#   Uninstall: ./install.sh --uninstall
+#
+# This script ONLY deploys the CLI tool (venv + symlink + PATH).
+# Skill installation is handled by: flowmock skill install
+
+REPO_URL="https://github.com/zztmercury/flowmock.git"
+REPO_RAW="https://raw.githubusercontent.com/zztmercury/flowmock/master"
+INSTALL_DIR_DEFAULT="$HOME/.flowmock"
+PYTHON_MIN_MAJOR=3
+PYTHON_MIN_MINOR=10
+
+# --- Colors ---
+if [ -t 1 ]; then
+    GREEN='\033[0;32m'; BLUE='\033[0;34m'; YELLOW='\033[0;33m'; RED='\033[0;31m'; BOLD='\033[1m'; NC='\033[0m'
+else
+    GREEN=''; BLUE=''; YELLOW=''; RED=''; BOLD=''; NC=''
+fi
+
+info()  { echo -e "${BLUE}[i]${NC} $*"; }
+ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
+err()    { echo -e "${RED}[✗]${NC} $*" >&2; }
+
+# --- Parse args ---
+UPDATE=0
+UNINSTALL=0
+PREFIX=""
+PYTHON_OVERRIDE=""
+YES=0
+PURGE=0
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --update)    UPDATE=1; shift ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        --purge)     PURGE=1; shift ;;
+        --prefix)    PREFIX="$2"; shift 2 ;;
+        --python)    PYTHON_OVERRIDE="$2"; shift 2 ;;
+        --yes|-y)    YES=1; shift ;;
+        --help|-h)   echo "Usage: install.sh [--update] [--uninstall] [--purge] [--prefix <dir>] [--python <path>] [--yes]"; exit 0 ;;
+        *)           err "Unknown option: $1"; exit 1 ;;
+    esac
+done
+
+# --- Banner ---
+echo
+echo -e "${BOLD}  flowmock${NC} — capture & mock protobuf/JSON via mitmproxy"
+echo -e "  AI agent friendly CLI + skill, Charles-style map local/remote/breakpoint"
+echo
+
+# --- Uninstall ---
+if [ $UNINSTALL -eq 1 ]; then
+    info "Uninstalling flowmock..."
+    # Remove CLI symlinks
+    for d in "$HOME/.local/bin" "$HOME/bin" "$HOME/.bun/bin" "/usr/local/bin"; do
+        if [ -L "$d/flowmock" ]; then
+            rm -f "$d/flowmock"
+            ok "Removed symlink: $d/flowmock"
+        fi
+    done
+    # Remove skill symlinks (legacy + current)
+    for sd in "$HOME/.agents/skills/flowmock" "$HOME/.agents/skills/mitmproxy-mock" "$HOME/.claude/skills/flowmock" "$HOME/.config/opencode/skills/flowmock"; do
+        if [ -L "$sd/SKILL.md" ]; then
+            rm -f "$sd/SKILL.md"
+            rmdir "$sd" 2>/dev/null || true
+            ok "Removed skill: $sd"
+        fi
+    done
+    if [ $PURGE -eq 1 ]; then
+        rm -rf "$INSTALL_DIR_DEFAULT"
+        ok "Purged $INSTALL_DIR_DEFAULT"
+    else
+        info "Project directory preserved at $INSTALL_DIR_DEFAULT (use --purge to delete)"
+    fi
+    ok "Uninstall complete."
+    exit 0
+fi
+
+# --- Determine script_dir (local vs remote mode) ---
+SCRIPT_DIR=""
+if [ -f "flowmock_addon.py" ] && [ -f "flowmock" ]; then
+    SCRIPT_DIR="$(pwd)"
+elif [ -f "$(dirname "$0")/flowmock_addon.py" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fi
+
+if [ -z "$SCRIPT_DIR" ]; then
+    # Remote mode: clone/update
+    SCRIPT_DIR="${FLOWMOCK_HOME:-$INSTALL_DIR_DEFAULT}"
+    if [ -d "$SCRIPT_DIR/.git" ]; then
+        info "Updating flowmock at $SCRIPT_DIR..."
+        git -C "$SCRIPT_DIR" pull --ff-only
+    else
+        info "Cloning flowmock to $SCRIPT_DIR..."
+        git clone "$REPO_URL" "$SCRIPT_DIR"
+    fi
+fi
+
+cd "$SCRIPT_DIR"
+
+if [ ! -f "flowmock" ] || [ ! -f "flowmock_addon.py" ]; then
+    err "flowmock or flowmock_addon.py not found in $SCRIPT_DIR"
+    err "This doesn't look like a flowmock project directory."
+    exit 1
+fi
+
+# --- Find Python 3.10+ ---
+find_python() {
+    if [ -n "$PYTHON_OVERRIDE" ]; then
+        if command -v "$PYTHON_OVERRIDE" >/dev/null 2>&1; then
+            echo "$PYTHON_OVERRIDE"
+            return 0
+        fi
+        return 1
+    fi
+    for cmd in python3.13 python3.12 python3.11 python3.10 python3; do
+        if command -v "$cmd" >/dev/null 2>&1; then
+            ver=$("$cmd" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null) || continue
+            major="${ver%%.*}"
+            minor="${ver#*.}"
+            if [ "$major" -ge "$PYTHON_MIN_MAJOR" ] 2>/dev/null && [ "$minor" -ge "$PYTHON_MIN_MINOR" ] 2>/dev/null; then
+                echo "$cmd"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+PYTHON=$(find_python) || {
+    err "Python >= ${PYTHON_MIN_MAJOR}.${PYTHON_MIN_MINOR} not found."
+    echo ""
+    echo "  macOS:  brew install python@3.13"
+    echo "  Ubuntu: sudo apt install python3.12"
+    echo "  Fedora: sudo dnf install python3.12"
+    echo "  conda:  conda install python=3.12"
+    echo ""
+    echo "  Or specify path: install.sh --python /path/to/python3.13"
+    exit 1
+}
+
+info "Python: $($PYTHON --version)"
+
+# --- venv ---
+VENV="$SCRIPT_DIR/.venv"
+if [ ! -x "$VENV/bin/python" ]; then
+    info "Creating venv at $VENV..."
+    "$PYTHON" -m venv "$VENV"
+fi
+
+info "Installing dependencies..."
+"$VENV/bin/pip" install -q --upgrade pip
+if [ $UPDATE -eq 1 ]; then
+    "$VENV/bin/pip" install -q --upgrade mitmproxy protobuf requests
+else
+    "$VENV/bin/pip" install -q mitmproxy protobuf requests
+fi
+ok "Dependencies installed"
+
+# --- Find writable PATH directory for CLI symlink ---
+find_prefix() {
+    if [ -n "$PREFIX" ]; then
+        echo "$PREFIX"
+        return 0
+    fi
+    IFS=':' read -ra DIRS <<< "$PATH"
+    for d in "${DIRS[@]}"; do
+        [ -d "$d" ] || continue
+        [ -w "$d" ] || continue
+        case "$d" in
+            /usr/bin|/bin|/usr/sbin|/sbin|/System/*) continue ;;
+        esac
+        echo "$d"
+        return 0
+    done
+    return 1
+}
+
+PREFIX=$(find_prefix)
+if [ -z "$PREFIX" ]; then
+    PREFIX="$HOME/.local/bin"
+    mkdir -p "$PREFIX"
+fi
+
+ln -sf "$SCRIPT_DIR/flowmock" "$PREFIX/flowmock"
+chmod +x "$SCRIPT_DIR/flowmock"
+ok "CLI installed → $PREFIX/flowmock"
+
+# --- PATH check + interactive shell config ---
+in_path() {
+    case ":$PATH:" in
+        *":$1:"*) return 0 ;;
+        *)        return 1 ;;
+    esac
+}
+
+if ! in_path "$PREFIX"; then
+    echo
+    warn "$PREFIX is not in your PATH."
+
+    if [ $YES -eq 1 ]; then
+        ANSWER="y"
+    else
+        read -p "  Add to shell config automatically? (Y/n) " ANSWER
+        ANSWER=${ANSWER:-y}
+    fi
+
+    case "$ANSWER" in
+        y|Y)
+            CURRENT_SHELL=$(basename "${SHELL:-}")
+            case "$CURRENT_SHELL" in
+                zsh)
+                    RCFILE="$HOME/.zshrc"
+                    LINE='export PATH="$HOME/.local/bin:$PATH"'
+                    ;;
+                bash)
+                    if [ "$(uname)" = "Darwin" ]; then
+                        RCFILE="$HOME/.bash_profile"
+                    else
+                        RCFILE="$HOME/.bashrc"
+                    fi
+                    LINE='export PATH="$HOME/.local/bin:$PATH"'
+                    ;;
+                fish)
+                    RCFILE="$HOME/.config/fish/config.fish"
+                    LINE='fish_add_path $HOME/.local/bin'
+                    ;;
+                *)
+                    warn "Unknown shell: $CURRENT_SHELL. Please add $PREFIX to PATH manually."
+                    RCFILE=""
+                    ;;
+            esac
+
+            if [ -n "$RCFILE" ]; then
+                mkdir -p "$(dirname "$RCFILE")"
+                touch "$RCFILE"
+                if grep -qF ".local/bin" "$RCFILE" 2>/dev/null; then
+                    info "$RCFILE already has .local/bin, skipping."
+                else
+                    cp "$RCFILE" "${RCFILE}.bak" 2>/dev/null || true
+                    echo "" >> "$RCFILE"
+                    echo "# Added by flowmock install" >> "$RCFILE"
+                    echo "$LINE" >> "$RCFILE"
+                    ok "Added PATH to $RCFILE (backup: ${RCFILE}.bak)"
+                    info "Open a new terminal or run: source $RCFILE"
+                fi
+            fi
+            ;;
+        n|N)
+            info "Skipped. Add $PREFIX to PATH manually to use flowmock command."
+            ;;
+    esac
+fi
+
+# --- Verify ---
+if in_path "$PREFIX"; then
+    if "$PREFIX/flowmock" agent-doc >/dev/null 2>&1; then
+        ok "Verification passed — flowmock CLI is ready."
+    else
+        warn "CLI symlink works but agent-doc failed. Check $SCRIPT_DIR/SKILL.md exists."
+    fi
+else
+    info "Verify with: $PREFIX/flowmock agent-doc"
+fi
+
+# --- Summary ---
+echo
+echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
+echo
+echo "  CLI:      $PREFIX/flowmock"
+echo "  Project:  $SCRIPT_DIR"
+echo "  Venv:     $VENV"
+echo
+echo -e "  ${BOLD}Next steps:${NC}"
+echo "    1. Start proxy:     flowmock start"
+echo "    2. Install skill:  flowmock skill install"
+echo "    3. Check health:   flowmock doctor"
+echo
