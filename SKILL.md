@@ -78,7 +78,8 @@ flowmock rules add 'api/game' game.id 999
 
 # 4. Verify
 flowmock flows --filter 'api/game'     # new flow captured
-flowmock decode <new_id>               # game.name=MockedGame, game.id=999
+flowmock decode <new_id>               # patch 后: game.name=MockedGame
+flowmock decode <new_id> --original    # patch 前: game.name=TapTap (对比)
 ```
 
 - Works identically for **PB and JSON** — both decoded to dict, path-patched, re-encoded.
