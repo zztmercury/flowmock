@@ -287,6 +287,55 @@ def _project_dir():
     return os.path.dirname(os.path.realpath(__file__))
 
 
+# ---------------- version checking ----------------
+
+RELEASES_API = "https://api.github.com/repos/zztmercury/flowmock/releases/latest"
+VERSION_CACHE = os.path.expanduser("~/.flowmock/.version_cache")
+VERSION_TTL = 3600  # 1 hour
+
+
+def _get_version():
+    project = _project_dir()
+    version_file = os.path.join(project, "VERSION")
+    if os.path.isfile(version_file):
+        with open(version_file) as f:
+            return f.read().strip()
+    return "unknown"
+
+
+def _check_remote_version():
+    """Check GitHub releases for latest version. Returns dict or None."""
+    # Check cache
+    if os.path.isfile(VERSION_CACHE):
+        import time
+        age = time.time() - os.path.getmtime(VERSION_CACHE)
+        if age < VERSION_TTL:
+            try:
+                with open(VERSION_CACHE) as f:
+                    return json.load(f)
+            except Exception:
+                pass
+    # Fetch from GitHub API
+    try:
+        r = urllib.request.Request(RELEASES_API)
+        r.add_header("Accept", "application/vnd.github+json")
+        with urllib.request.urlopen(r, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            result = {
+                "tag": data.get("tag_name", "").lstrip("v"),
+                "url": data.get("html_url", ""),
+                "body": data.get("body", ""),
+            }
+            # Cache
+            cache_dir = os.path.dirname(VERSION_CACHE)
+            os.makedirs(cache_dir, exist_ok=True)
+            with open(VERSION_CACHE, "w") as f:
+                json.dump(result, f)
+            return result
+    except Exception:
+        return None
+
+
 def _skill_target_dirs(agent=None):
     """Return list of (agent_name, dir) for skill installation targets."""
     home = os.path.expanduser("~")
@@ -407,8 +456,21 @@ def cmd_skill(args):
 def cmd_update(args):
     check_only = "--check" in args
     project = _project_dir()
+    local = _get_version()
+    remote = _check_remote_version()
+    if check_only:
+        if remote and remote["tag"] != local:
+            print(f"Update available: {remote['tag']} (current: {local})")
+            if remote.get("url"):
+                print(f"Changelog: {remote['url']}")
+            print("Run: flowmock update")
+        elif remote:
+            print(f"Up to date ({local}).")
+        else:
+            print(f"Current: {local} (remote check failed)")
+        return
     if not os.path.isdir(os.path.join(project, ".git")):
-        print("Not a git repo. Update via: git clone + install.sh")
+        print("Not a git repo. Update via: install.sh")
         return
     try:
         r = subprocess.run(
@@ -416,9 +478,6 @@ def cmd_update(args):
             cwd=project, capture_output=True, text=True, timeout=30,
         )
         if r.stdout.strip() or r.stderr.strip():
-            if check_only:
-                print("Update available.")
-                return
             print("Updating...")
             subprocess.run(["git", "pull", "--ff-only"], cwd=project, check=True)
             venv = os.path.join(project, ".venv")
@@ -426,7 +485,7 @@ def cmd_update(args):
                 pip = os.path.join(venv, "bin", "pip")
                 subprocess.run([pip, "install", "--upgrade", "-q",
                                 "mitmproxy", "protobuf", "requests"], check=True)
-            print("Updated successfully.")
+            print(f"Updated to {_get_version()}.")
         else:
             print("Already up to date.")
     except subprocess.TimeoutExpired:
@@ -436,19 +495,19 @@ def cmd_update(args):
 
 
 def cmd_version(args):
-    project = _project_dir()
-    try:
-        r = subprocess.run(
-            ["git", "describe", "--tags", "--always"],
-            cwd=project, capture_output=True, text=True, timeout=5,
-        )
-        ver = r.stdout.strip()
-        if ver:
-            print(f"flowmock {ver}")
+    local = _get_version()
+    print(f"flowmock {local}")
+    if "--check" in args:
+        remote = _check_remote_version()
+        if remote and remote["tag"] != local:
+            print(f"  Update available: {remote['tag']}")
+            if remote.get("url"):
+                print(f"  Changelog: {remote['url']}")
+            print("  Run: flowmock update")
+        elif remote:
+            print("  Up to date.")
         else:
-            print("flowmock (dev)")
-    except Exception:
-        print("flowmock (unknown)")
+            print("  (remote check failed)")
 
 
 def cmd_doctor(args):
@@ -500,6 +559,17 @@ def cmd_doctor(args):
         print(f"  addon:      NOT running — run: flowmock start")
         issues.append("addon")
 
+    # 6. version
+    local = _get_version()
+    remote = _check_remote_version()
+    if remote and remote["tag"] != local:
+        print(f"  version:    OUTDATED (local: {local}, remote: {remote['tag']})")
+        issues.append("version")
+    elif remote:
+        print(f"  version:    {local} (up to date)")
+    else:
+        print(f"  version:    {local} (remote check failed)")
+
     print()
     if issues:
         print(f"  Issues: {', '.join(issues)}")
@@ -539,6 +609,11 @@ def cmd_start(args):
             fc = health.get("flow_count", 0)
             print(f"  Ready! flow_count={fc}")
             print(f"  Control API: http://{HOST}:{PORT}")
+            # Non-blocking version check
+            local = _get_version()
+            remote = _check_remote_version()
+            if remote and remote["tag"] != local:
+                print(f"  [i] Update available: {remote['tag']} (current: {local}). Run: flowmock update")
             return
     print("  [TIMEOUT] control API not ready in 15s. Check log:")
     print(f"  tail -20 {log_file}")

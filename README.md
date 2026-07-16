@@ -44,7 +44,7 @@ flowmock update            # 自更新
 ```bash
 flowmock start             # 起 mitmdump + addon + adb reverse + 设备代理
 ```
-首次按提示装 CA 证书（用户证书：设备访问 http://mitm.it；系统证书见 mitmproxy 官方文档）。
+首次按提示装 CA 证书（用户证书：设备访问 http://mitm.it；系统证书见 [mitmproxy 官方文档](https://docs.mitmproxy.org/stable/howto/install-system-trusted-ca-android/)）。
 
 ## CLI（AI agent 用）
 ```bash
