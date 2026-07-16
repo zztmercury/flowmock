@@ -89,7 +89,7 @@ fi
 SCRIPT_DIR=""
 if [ -f "flowmock_addon.py" ] && [ -f "flowmock" ]; then
     SCRIPT_DIR="$(pwd)"
-elif [ -f "$(dirname "$0")/flowmock_addon.py" ]; then
+elif [ -n "${0:-}" ] && [ -f "$(dirname "$0" 2>/dev/null)/flowmock_addon.py" ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 fi
 
@@ -217,10 +217,18 @@ if ! in_path "$PREFIX"; then
     case "$ANSWER" in
         y|Y)
             CURRENT_SHELL=$(basename "${SHELL:-}")
+            # Use $HOME variable if PREFIX is under home, for portability
+            PREFIX_DISPLAY="$PREFIX"
+            case "$PREFIX" in
+                "$HOME"/*)
+                    remainder="${PREFIX#$HOME}"
+                    PREFIX_DISPLAY="\$HOME$remainder"
+                    ;;
+            esac
             case "$CURRENT_SHELL" in
                 zsh)
                     RCFILE="$HOME/.zshrc"
-                    LINE='export PATH="$HOME/.local/bin:$PATH"'
+                    LINE="export PATH=\"${PREFIX_DISPLAY}:\$PATH\""
                     ;;
                 bash)
                     if [ "$(uname)" = "Darwin" ]; then
@@ -228,11 +236,11 @@ if ! in_path "$PREFIX"; then
                     else
                         RCFILE="$HOME/.bashrc"
                     fi
-                    LINE='export PATH="$HOME/.local/bin:$PATH"'
+                    LINE="export PATH=\"${PREFIX_DISPLAY}:\$PATH\""
                     ;;
                 fish)
                     RCFILE="$HOME/.config/fish/config.fish"
-                    LINE='fish_add_path $HOME/.local/bin'
+                    LINE="fish_add_path $PREFIX"
                     ;;
                 *)
                     warn "Unknown shell: $CURRENT_SHELL. Please add $PREFIX to PATH manually."
@@ -243,8 +251,10 @@ if ! in_path "$PREFIX"; then
             if [ -n "$RCFILE" ]; then
                 mkdir -p "$(dirname "$RCFILE")"
                 touch "$RCFILE"
-                if grep -qF ".local/bin" "$RCFILE" 2>/dev/null; then
-                    info "$RCFILE already has .local/bin, skipping."
+                # Check if PREFIX basename already in RCFILE
+                PREFIX_BASE=$(basename "$PREFIX")
+                if grep -qF "$PREFIX_BASE" "$RCFILE" 2>/dev/null; then
+                    info "$RCFILE already has $PREFIX_BASE, skipping."
                 else
                     cp "$RCFILE" "${RCFILE}.bak" 2>/dev/null || true
                     echo "" >> "$RCFILE"
