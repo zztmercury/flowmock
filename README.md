@@ -42,7 +42,7 @@ flowmock update            # 自更新
 
 ## 启动
 ```bash
-flowmock start             # 起 mitmweb + addon + adb reverse + 设备代理
+flowmock start             # 起 mitmdump + addon + adb reverse + 设备代理
 ```
 首次按提示装 CA 证书（用户证书：设备访问 http://mitm.it；系统证书见 mitmproxy 官方文档）。
 
@@ -98,7 +98,7 @@ flowmock start / stop / restart                # 启动/停止/重启
 - `flowmock_addon.py` — mitmproxy addon（协议识别/PB/JSON/dict/双向/mock/control API/contentview）
 - `flowmock` — CLI（纯 stdlib，调 control API + 工具维护）
 - `install.sh` — oh-my-zsh 式一键安装
-- `start.sh` — 启动脚本（adb reverse + 设备代理 + mitmweb）
+- `start.sh` — 启动脚本（adb reverse + 设备代理 + mitmdump）
 - `SKILL.md` — agent 文档（与 CLI `agent-doc` 同源）
 - `rules.yaml` — 持久化 mock 规则（启动时自动加载，运行时实时写回）
 - `test_engine.py` / `test_server.py` — 测试

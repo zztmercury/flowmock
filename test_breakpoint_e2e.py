@@ -15,7 +15,7 @@ import urllib.request
 PROXY = "http://127.0.0.1:8080"
 CONTROL = "http://127.0.0.1:9090"
 VENV_PY = ".venv/bin/python"
-VENV_MITMWEB = ".venv/bin/mitmweb"
+VENV_MITMWEB = ".venv/bin/mitmdump"
 TEST_SERVER_PORT = 8889
 
 procs = []

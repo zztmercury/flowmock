@@ -514,20 +514,45 @@ def cmd_start(args):
     if not os.path.isfile(start_sh):
         print(f"start.sh not found at {start_sh}")
         sys.exit(1)
-    os.execv(start_sh, [start_sh] + list(args))
+    # Already running?
+    health = _req("GET", "/health")
+    if isinstance(health, dict) and health.get("ok"):
+        print("flowmock already running.")
+        return
+    # Start in background, log to file
+    log_file = os.path.join(project, "flowmock.log")
+    log = open(log_file, "w")
+    proc = subprocess.Popen(
+        [start_sh] + list(args),
+        stdout=log, stderr=log,
+        stdin=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    print(f"Starting flowmock (PID {proc.pid})...")
+    print(f"  log: {log_file}")
+    # Wait for control API to be ready (up to 15s)
+    import time
+    for _ in range(30):
+        time.sleep(0.5)
+        health = _req("GET", "/health")
+        if isinstance(health, dict) and health.get("ok"):
+            fc = health.get("flow_count", 0)
+            print(f"  Ready! flow_count={fc}")
+            print(f"  Control API: http://{HOST}:{PORT}")
+            return
+    print("  [TIMEOUT] control API not ready in 15s. Check log:")
+    print(f"  tail -20 {log_file}")
+    sys.exit(1)
 
 
 def cmd_stop(args):
-    r = subprocess.run(
-        ["pkill", "-f", "mitmweb.*flowmock_addon"],
-        capture_output=True,
-    )
+    # Match flowmock_addon in command line (works for mitmdump/mitmweb
+    # which show as Python process on macOS)
+    r = subprocess.run(["pkill", "-f", "flowmock_addon"], capture_output=True)
     if r.returncode == 0:
         print("Stopped.")
     else:
-        # fallback: try pkill mitmweb
-        r2 = subprocess.run(["pkill", "-f", "mitmweb"], capture_output=True)
-        print("Stopped." if r2.returncode == 0 else "Not running.")
+        print("Not running.")
 
 
 def cmd_restart(args):
