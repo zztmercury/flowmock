@@ -25,10 +25,10 @@ else
     GREEN=''; BLUE=''; YELLOW=''; RED=''; BOLD=''; NC=''
 fi
 
-info()  { echo -e "${BLUE}[i]${NC} $*"; }
-ok()    { echo -e "${GREEN}[✓]${NC} $*"; }
-warn()  { echo -e "${YELLOW}[!]${NC} $*"; }
-err()    { echo -e "${RED}[✗]${NC} $*" >&2; }
+info()  { printf "${BLUE}[i]${NC} %s\n" "$*"; }
+ok()    { printf "${GREEN}[✓]${NC} %s\n" "$*"; }
+warn()  { printf "${YELLOW}[!]${NC} %s\n" "$*"; }
+err()   { printf "${RED}[✗]${NC} %s\n" "$*" >&2; }
 
 # --- Parse args ---
 UPDATE=0
@@ -53,8 +53,8 @@ done
 
 # --- Banner ---
 echo
-echo -e "${BOLD}  flowmock${NC} — capture & mock protobuf/JSON via mitmproxy"
-echo -e "  AI agent friendly CLI + skill, Charles-style map local/remote/breakpoint"
+printf "${BOLD}  flowmock${NC} — capture & mock protobuf/JSON via mitmproxy\n"
+printf "  AI agent friendly CLI + skill, Charles-style map local/remote/breakpoint\n"
 echo
 
 # --- Uninstall ---
@@ -188,8 +188,8 @@ find_prefix() {
 PREFIX=$(find_prefix)
 if [ -z "$PREFIX" ]; then
     PREFIX="$HOME/.local/bin"
-    mkdir -p "$PREFIX"
 fi
+mkdir -p "$PREFIX"
 
 ln -sf "$SCRIPT_DIR/flowmock" "$PREFIX/flowmock"
 chmod +x "$SCRIPT_DIR/flowmock"
@@ -274,13 +274,13 @@ fi
 
 # --- Summary ---
 echo
-echo -e "${GREEN}${BOLD}  Installation complete!${NC}"
+printf "${GREEN}${BOLD}  Installation complete!${NC}\n"
 echo
 echo "  CLI:      $PREFIX/flowmock"
 echo "  Project:  $SCRIPT_DIR"
 echo "  Venv:     $VENV"
 echo
-echo -e "  ${BOLD}Next steps:${NC}"
+printf "  ${BOLD}Next steps:${NC}\n"
 echo "    1. Start proxy:     flowmock start"
 echo "    2. Install skill:  flowmock skill install"
 echo "    3. Check health:   flowmock doctor"
