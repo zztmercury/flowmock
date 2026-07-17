@@ -5,6 +5,21 @@
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.0] - 2026-07-17
+
+### 新增
+- `pbmockx connect-android [-s <serial>]` 命令——独立配置 Android 设备代理（adb reverse + http_proxy），支持多设备
+- `pbmockx web` 命令——打开 mitmweb Web UI 页面
+- `PBJsonView` 改用 `InteractiveContentview`（mitmproxy 12 API）——支持 `reencode` 方法，待 mitmweb 新版支持后可在 Web UI 直接编辑 PB
+- `render_priority` 提高到 2.0——pbmockx 成为 PB/JSON 的默认 view（优先于内置 protobuf）
+- `syntax_highlight` 改为 `json`——JSON 语法高亮
+
+### 变更
+- `start.sh` 统一用 mitmweb（不再混用 mitmdump/mitmweb），`--no-web-open-browser` 不自动打开浏览器
+- mitmweb 固定密码 `pbmockx`（避免随机 token）
+- `start.sh` 去掉 adb 代理设置——Android 代理解耦到 `connect-android` 命令，不再绑定平台
+- `rules.yaml` 从 git 移除，改为 `rules.yaml.example`（模板）+ `rules.yaml`（运行时生成，.gitignore 排除，git pull 不覆盖用户规则）
+
 ## [0.2.0] - 2026-07-16
 
 ### 变更
