@@ -13,7 +13,8 @@
 
 ### 新增
 - **whistle.pbmockx 插件**（`whistle-plugin/`）：Node.js/TypeScript，运行在 whistle 进程内
-  - **pipe hooks**（resRead/reqRead）：decode→patch→encode 单向处理，自动解压 gzip/deflate/br
+  - **pipe hooks**（resRead/reqRead）：decode→patch→encode 单向处理，自动解压 gzip/deflate/br（按 `content-encoding` 调用 `zlib.gunzipSync`/`inflateSync`/`brotliDecompressSync`，encode 后返回未压缩 body，whistle 自动剥离 content-encoding）
+  - **Any 展开/回包**（`src/any-expand.ts`）：patch 前 `expandAny` 按 `type_url` 解码 `google.protobuf.Any` 的 value bytes 为内层 message，patch path 可穿透 Any 字段导航到内层业务字段（如 `data.value.list[0].app.title`，`data` 是 Any，`value` 是内层 message），patch 后 `packAny` 重新编码为 bytes 包回 Any
   - **PBView 子标签页**：Request/Response 区各注入一个 PBView 子标签页，展示 PB 字段树
     - 格式 `name#N (type) = value`，带字段号、类型标注
     - `google.protobuf.Any` 按 `type_url` 嵌套解码
@@ -21,7 +22,15 @@
   - **rulesServer hook**：map_remote / map_local(file) 自动翻译为 whistle 原生规则
   - **uiServer**（Koa）：CGI API 供 CLI 和 PBView 调用
 - **PB 引擎用 protobufjs 重写**：`Root.fromDescriptor` 动态加载，`long` 库处理 int64 精度，不转 JSON（直接操作 message 对象，避免 int64→string / enum→string 歧义）
-- **Node.js CLI**（`bin/cli.js`）：所有命令支持 `-h`/`--help`，`decode <id>` 显示 headers + 字段树，支持 `--req`/`--res`/`--original`
+- **Node.js CLI**（`bin/cli.js`）：所有命令支持 `-h`/`--help`，`decode <id>` 显示 headers + 字段树
+  - `decode` **默认折叠模式**（节省 token，适合 AI agent）：顶层 scalar 显示值，嵌套 message 显示 `(type, N fields) ▸`，repeated 显示 `(repeated type, N items) ▸`，长字符串截断到 80 字符加 `...`
+  - `--req` / `--res`：只看 Request 或 Response（**同一 flow**，不是找另一个 flow）
+  - `--original`：显示 patch 前原始数据（可与 `--path` / `--full` 组合）
+  - `--path <path>`：导航到子树（折叠显示），路径含 `[n]` 需加引号
+  - `--full`：完整展开所有层级（不截断，旧版默认行为）
+- **flow_store 合并 REQ/RES 双 ID**：同一个 whistle session ID（如 `1784529570691-003`）同时持有 request 和 response 数据。reqRead 上报时 upsert 到 `req` 字段，resRead 上报时 upsert 到 `res` 字段，不创建新条目。`flows` 列表每条请求一行（无 `dir` 列），`decode <id>` 同一 ID 同时显示 Request 和 Response。
+- **`pbmockx fix` 命令**：自动修复插件安装——rebuild（dist 缺失时跑 `npm install` + `tsc`）→ npm link → w2 restart 加载插件 + rules.txt → verify health。适用场景：插件被 Web UI 卸载、npm link 失效、系统更新后。
+- **`whistle-plugin/rules.txt` 自动加载**：插件级规则文件（`* pipe://pbmockx`），whistle 加载插件时自动注入，所有请求默认走 pipe（decode→patch→encode），无需用户在 Web UI 手写 pipe 规则。用户可在 whistle UI 里加更具体的 `pattern pipe://pbmockx` 规则做选择性 pipe。
 
 ### 变更
 - **进程管理交给 w2**：`w2 start` / `w2 stop` / `w2 restart` 替代 pbmockx start/stop/restart

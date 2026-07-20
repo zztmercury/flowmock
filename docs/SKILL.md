@@ -57,12 +57,13 @@ w2 / 插件 / 规则 / 流量。解读结果：
 ```
 pbmockx flows
 ```
-输出列：`id  dir  method  status  protocol  messageType  url`。`dir` 是 `REQ` 或
-`RES`（分别来自 reqRead 和 resRead pipe），`protocol` 是 `protobuf` / `json`
-（空表示未识别），`messageType` 是 PB 全限定消息类型名。记下你要 mock 的 flow
-的 `id`（接受前 8 位）和方向/协议。
+输出列：`id  method  status  protocol  messageType  url`。`id` 是 whistle
+session ID（如 `1784529570691-003`），**同一个 ID 同时持有 request 和 response
+数据**（v0.4.0 起合并了 REQ/RES 双 ID，每条请求一行，无 `dir` 列）。
+`protocol` 是 `protobuf` / `json`（空表示未识别），`messageType` 是响应的
+PB 全限定消息类型名。记下你要 mock 的 flow 的 `id`（接受前 8 位）。
 - 肉眼过滤：找到与你测试功能匹配的 URL 路径。
-- `dir=RES  protocol=protobuf` = PB 响应接口；`dir=RES  protocol=json` = JSON 响应。
+- `protocol=protobuf` = PB 响应接口；`protocol=json` = JSON 响应。
 - `ERR:...`（decode 失败时 `protocol` 可能为空且 `decode <id>` 报错）—— 见故障排查。
 - 用 `--filter <regex>` 缩小范围：`pbmockx flows --filter api/game`
 - 也可直接在 whistle UI 里翻 Network（更直观）。
@@ -77,12 +78,21 @@ pbmockx flows
   - **默认折叠**，点击行首 `▸` 展开（展开后变 `▾`）。从这里抄出你要改的字段的 path。
 - **JSON flow**：PBView 会显示 `JSON — use the Body tab`，请在 whistle 原生
   Body tab 查看 pretty-JSON。
-- 或 CLI：`pbmockx decode <id>` —— 默认按 flow 方向显示：
-  - `dir=RES` flow 显示 Response headers + body（PB 字段树或 pretty JSON）。
-  - `dir=REQ` flow 显示 Request headers + body。
-  - `pbmockx decode <id> --req`：找到并显示匹配的 **请求** flow（基于同 URL）。
-  - `pbmockx decode <id> --res`：找到并显示匹配的 **响应** flow。
-  - `pbmockx decode <id> --original`：显示应用任何 patch 规则**之前**的原始数据。
+- 或 CLI：`pbmockx decode <id>` —— **默认折叠模式**（v0.4.0 起新默认，节省
+  token，适合 AI agent），同一个 ID 同时显示 Request 和 Response（不再需要
+  找匹配的 REQ/RES flow）：
+  - **顶层 scalar 字段**直接显示值；**嵌套 message** 显示 `(type, N fields) ▸`；
+    **repeated 字段** 显示 `(repeated type, N items) ▸`；**长字符串**截断到
+    80 字符加 `...`。
+  - `pbmockx decode <id>`：默认同时显示 Request 和 Response。
+  - `pbmockx decode <id> --req`：只显示 Request headers + body（同一 flow，
+    不是去找另一个 flow）。
+  - `pbmockx decode <id> --res`：只显示 Response headers + body。
+  - `pbmockx decode <id> --path 'list[0].app'`：导航到某个子树，显示该子树的
+    顶层（折叠）。路径含 `[0]` 时**务必加引号**（避免 shell glob 展开）。
+  - `pbmockx decode <id> --full`：完整展开所有层级（不截断，等同旧版默认行为）。
+  - `pbmockx decode <id> --original`：显示应用任何 patch 规则**之前**的原始数据
+    （可与 `--path` / `--full` 组合，如 `--original --path game`）。
   - 输出格式：`=== Response ===` + 状态行 + headers + 空行 + `=== Response Body (PB: <type>) ===`
     + `renderTree` 字段树（`name#N (type) = value`，与 PBView 同格式）。
 - **google.protobuf.Any 字段**：PBView / CLI 会基于 `type_url` 自动解码内层
@@ -106,9 +116,17 @@ pbmockx flows
 
 patch 通过 whistle 的 **pipe 机制**生效：插件加载时由 `whistle-plugin/rules.txt`
 自动注入 `* pipe://pbmockx` 全量规则，pbmockx 会接管所有请求 —— **自动解压
-gzip/deflate/br** → 解码 → 应用 patch 规则 → 重新编码 → 返回**未压缩** body
-（whistle 会自动处理 `content-encoding`，无需手动 re-compress）。**不暂停、不超时。**
+gzip/deflate/br** → 解码 → **展开 `google.protobuf.Any` 字段**（按 `type_url`
+解码 value bytes 为内层 message 对象）→ 应用 patch 规则（path 可穿透 Any 字段
+导航到内层业务字段）→ **回包 Any 字段**（重新编码为 bytes）→ 重新编码 →
+返回**未压缩** body（whistle 会自动处理 `content-encoding`，无需手动
+re-compress）。**不暂停、不超时。**
 （如需选择性 pipe，可在 whistle UI 里加更具体的 `pattern pipe://pbmockx` 规则覆盖。）
+
+> **patch 穿透 Any 的 path 示例**：`data.value.list[0].list[2].app.title` ——
+> 其中 `data` 是 `google.protobuf.Any` 字段，`value` 是 pipe hook 自动展开后的
+> 内层 message。你**不需要手动解码/编码 Any**，pipe hook 全程自动处理。
+> **不要修改 `@type` / `type_url`** —— 只改内层业务字段。
 
 **标准工作流（Agent 首选）：**
 ```
@@ -124,9 +142,9 @@ pbmockx rules add 'api/game' game.id 999
 #    不暂停、不超时 ✅
 
 # 4. 验证
-pbmockx flows --filter 'api/game'     # 抓到新 flow
-pbmockx decode <new_id>               # patch 后: game.name=MockedGame
-pbmockx decode <new_id> --original    # patch 前: game.name=TapTap (对比)
+pbmockx flows --filter 'api/game'              # 抓到新 flow
+pbmockx decode <new_id> --path game             # 折叠显示 game 子树（看到 name=MockedGame）
+pbmockx decode <new_id> --original --path game  # patch 前: name=TapTap（对比）
 ```
 
 - **PB 和 JSON 行为完全一致** —— 都解码为 message/dict，按 path patch，
@@ -209,8 +227,13 @@ pbmockx web                           # 打开 whistle Web UI
 
 ### 抓包与查看
 ```
-pbmockx flows [--filter <regex>]              # 列出 flow：id dir method status protocol messageType url
-pbmockx decode <id> [--req|--res] [--original]  # 显示 headers + PB 字段树 / pretty JSON
+pbmockx flows [--filter <regex>]                            # 列出 flow：id method status protocol messageType url
+pbmockx decode <id> [--req|--res] [--original] [--path <path>] [--full]
+                                                            # 默认折叠模式（节省 token，适合 AI agent）
+                                                            #   --req/--res     只看 Request 或 Response（同一 flow，不是找另一个 flow）
+                                                            #   --original      patch 前原始数据（可与 --path/--full 组合）
+                                                            #   --path <path>   导航到子树（折叠显示），路径含 [n] 需加引号
+                                                            #   --full          完整展开所有层级（不截断，旧版默认）
 ```
 > - **PB flow**：在 whistle UI 的 Network 里点开请求，切到 **Response → PBView**
 >   sub-tab（响应）或 **Request → PBView** sub-tab（请求体）查看结构化字段树
@@ -218,8 +241,12 @@ pbmockx decode <id> [--req|--res] [--original]  # 显示 headers + PB 字段树 
 >   比 CLI 更直观，且支持点击展开任意层级。
 > - **JSON flow**：PBView 显示 `JSON — use the Body tab`，请用 whistle 原生
 >   Body tab 查看。CLI `decode <id>` 对 JSON flow 直接输出 pretty-JSON。
-> - `decode <id>` 默认按 flow 方向显示（res→Response，req→Request）。
->   `--req` / `--res` 强制切换到匹配的请求 / 响应 flow（基于同 URL 关联）。
+> - **默认折叠模式**（v0.4.0 新默认）：顶层 scalar 显示值，嵌套 message 显示
+>   `(type, N fields) ▸`，repeated 显示 `(repeated type, N items) ▸`，长字符串
+>   截断到 80 字符加 `...`。适合 AI agent 节省 token —— 用 `--path 'x.y[0].z'`
+>   钻入子树看局部细节，用 `--full` 全展开。
+> - `decode <id>` 同一 ID 同时显示 Request 和 Response（v0.4.0 合并了 REQ/RES
+>   双 ID，flows 列表无 `dir` 列）；`--req` / `--res` 只显示对应部分。
 > - `decode <id> --original` 显示 patch 前的原始数据（与 patch 后对比验证）。
 > - 所有子命令都有 `-h` / `--help`（例如 `pbmockx flows -h`、`pbmockx decode -h`）。
 
@@ -304,10 +331,10 @@ patch 规则只有在匹配请求经过 `pipe://pbmockx` 时才会执行。**插
 pattern: api/game      （比 * 更具体，只 pipe 匹配的请求）
 operator: pipe://pbmockx
 ```
-匹配的请求会走 pbmockx 的「自动解压 gzip/deflate/br → decode → patch →
-encode」管道，返回**未压缩** body —— whistle 会自动处理 content-encoding
-（剥除响应头里的 `content-encoding`），客户端和 Web UI 看到的都是 raw bytes。
-其他流量不受影响。
+匹配的请求会走 pbmockx 的「自动解压 gzip/deflate/br → decode → **展开 Any 字段**
+→ patch（path 可穿透 Any）→ **回包 Any 字段** → encode」管道，返回**未压缩**
+body —— whistle 会自动处理 content-encoding（剥除响应头里的 `content-encoding`），
+客户端和 Web UI 看到的都是 raw bytes。其他流量不受影响。
 
 ## 5. 故障排查
 - **`pbmockx doctor` 报 `w2: NOT running`**：运行 `w2 start`。若 `w2` 命令
@@ -322,7 +349,13 @@ encode」管道，返回**未压缩** body —— whistle 会自动处理 conten
 - **patch 规则不生效**：默认 `* pipe://pbmockx` 由 `rules.txt` 自动注入，
   无需手写 pipe 规则。如果你在 whistle UI 里改过 Rules（覆盖了 `*` 规则），
   确认对应 pattern 仍指向 `pipe://pbmockx`（§4 末尾）。同时检查 `url_regex`
-  是否真的匹配请求 URL。
+  是否真的匹配请求 URL。若插件被 Web UI 卸载或 npm link 失效，运行
+  `pbmockx fix`（rebuild → npm link → w2 restart → verify）一键修复。
+- **patch 穿透 Any 时报 `path not found`**：pipe hook 会自动展开
+  `google.protobuf.Any` 字段（按 `type_url` 解码 value bytes），patch 的 path
+  可直接导航到展开后的内层 message 字段（如 `data.value.list[0].app.title`，
+  `data` 是 Any，`value` 是内层 message）。确认 `type_url` 在 `.desc` 里能找到
+  对应类型，否则无法展开。**不要修改 `@type` / `type_url`**。
 - **`decode` 返回 `error: "Couldn't find message X"`**：.desc 已加载但
   message X 的文件添加失败（缺少 google well-known 依赖）—— 这是
   插件 bug，请上报。或 `desc` URL 不可达 / `messageType` 错误：检查
