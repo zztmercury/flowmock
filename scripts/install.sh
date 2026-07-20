@@ -61,13 +61,14 @@ if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../whistle-plugin/package.json" ]; 
 else
     # Remote install — clone the repo
     INSTALL_DIR="${PBMOCKX_DIR:-$INSTALL_DIR_DEFAULT}"
-    if [ -d "$INSTALL_DIR/.git" ]; then
-        if [ $UPDATE -eq 1 ]; then
+    if [ -d "$INSTALL_DIR" ]; then
+        if [ $UPDATE -eq 1 ] || [ -d "$INSTALL_DIR/.git" ]; then
             info "Updating pbmockx at $INSTALL_DIR..."
             cd "$INSTALL_DIR"
             git pull --quiet || warn "git pull failed, continuing with existing version"
         else
-            info "Found existing pbmockx at $INSTALL_DIR"
+            err "$INSTALL_DIR already exists and is not a git repo. Remove it or set PBMOCKX_DIR."
+            exit 1
         fi
     else
         info "Cloning pbmockx to $INSTALL_DIR..."
