@@ -110,7 +110,7 @@ Examples:
 }
 
 function helpDecode() {
-  console.log(`Usage: pbmockx decode <id> [--req|--res] [--original]
+  console.log(`Usage: pbmockx decode <id> [--req|--res] [--original] [--path <path>] [--full]
 
 Show flow details: headers + decoded body (PB field tree or JSON).
 
@@ -121,11 +121,18 @@ Options:
   --req                           Show only request headers + body
   --res                           Show only response headers + body
   --original                      Show original (pre-patch) data instead of patched
+  --path <path>                   Navigate to subtree (e.g. data.list[0].list[2].app)
+  --full                          Expand all fields (default: collapsed top-level only)
   -h, --help                      Show this help
+
+Default output is collapsed — nested messages show (type, N fields) ▸.
+Use --path to drill into a subtree, or --full to expand everything.
 
 Examples:
   pbmockx decode abc123
   pbmockx decode abc123 --res
+  pbmockx decode abc123 --path data.list[0].list[2].app
+  pbmockx decode abc123 --full
   pbmockx decode abc123 --original`);
 }
 
@@ -249,6 +256,9 @@ async function cmd_decode(args) {
   const wantReq = args.includes('--req');
   const wantRes = args.includes('--res');
   const original = args.includes('--original');
+  const fullExpand = args.includes('--full');
+  const pathIdx = args.indexOf('--path');
+  const path = pathIdx >= 0 ? args[pathIdx + 1] : undefined;
   const qs = original ? '?original=1' : '';
   const data = await _req('GET', '/cgi-bin/flows/' + id + qs);
 
@@ -258,16 +268,16 @@ async function cmd_decode(args) {
   const showRes = wantRes || (!wantReq && data.hasRes);
 
   if (showReq && (data.reqHeaders || data.reqData !== undefined)) {
-    printSection('Request', data.method, data.url, data.reqHeaders, data.reqProtocol, data.reqMessageType, data.reqData, original);
+    printSection('Request', data.method, data.url, data.reqHeaders, data.reqProtocol, data.reqMessageType, data.reqData, original, path, fullExpand);
     if (showRes) console.log('');
   }
   if (showRes && (data.resHeaders || data.resData !== undefined)) {
-    printSection('Response', 'HTTP ' + (data.status || 200), data.url, data.resHeaders, data.resProtocol, data.resMessageType, data.resData, original);
+    printSection('Response', 'HTTP ' + (data.status || 200), data.url, data.resHeaders, data.resProtocol, data.resMessageType, data.resData, original, path, fullExpand);
   }
   if (data.error) console.error('Error:', data.error);
 }
 
-function printSection(title, methodLine, url, headers, protocol, messageType, body, original) {
+function printSection(title, methodLine, url, headers, protocol, messageType, body, original, path, fullExpand) {
   console.log('=== ' + title + ' ===');
   console.log(methodLine + ' ' + (url || ''));
   if (headers) {
@@ -280,8 +290,24 @@ function printSection(title, methodLine, url, headers, protocol, messageType, bo
     if (protocol === 'json') {
       console.log(JSON.stringify(body, null, 2));
     } else if (body && body.fields) {
-      try { const { renderTree } = require('../dist/src/field-tree'); console.log(renderTree(body)); }
-      catch { console.log(JSON.stringify(body, null, 2)); }
+      try {
+        if (fullExpand) {
+          const { renderTree } = require('../dist/src/field-tree');
+          console.log(renderTree(body));
+        } else if (path) {
+          const { navigatePath, renderTreeCollapsed } = require('../dist/src/field-tree');
+          const subtree = navigatePath(body, path);
+          if (subtree) {
+            console.log(renderTreeCollapsed(subtree));
+          } else {
+            console.log('Path not found: ' + path);
+            console.log('Available top-level fields: ' + body.fields.map(f => f.name).join(', '));
+          }
+        } else {
+          const { renderTreeCollapsed } = require('../dist/src/field-tree');
+          console.log(renderTreeCollapsed(body));
+        }
+      } catch (e) { console.log(JSON.stringify(body, null, 2)); }
     }
   }
 }
@@ -295,7 +321,7 @@ async function cmd_rules(args) {
     const value = args.find((a, i) => i > args.indexOf(rulePath) && !a.startsWith('-'));
     if (!url || !rulePath) { console.error('Usage: pbmockx rules add <url> <path> <value> [--protocol pb|json]'); process.exit(1); }
     const protoIdx = args.indexOf('--protocol');
-    const protocol = protoIdx >= 0 ? args[protoIdx + 1] : undefined;
+    const protocol = protoIdx >= 0 ? (args[protoIdx + 1] === 'pb' ? 'protobuf' : args[protoIdx + 1]) : undefined;
     const rule = { type: 'patch', url_pattern: url, path: rulePath, value: _parseValue(value) };
     if (protocol) rule.protocol = protocol;
     const result = await _req('POST', '/cgi-bin/rules', rule);

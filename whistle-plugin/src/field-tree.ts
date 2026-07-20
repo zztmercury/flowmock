@@ -370,3 +370,102 @@ function formatValue(v: any): string {
   if (typeof v === 'string') return `"${v}"`;
   return String(v);
 }
+
+function truncate(s: string, max = 80): string {
+  return s.length > max ? s.slice(0, max) + '...' : s;
+}
+
+// --- Collapsed rendering (default for CLI) ---
+
+export function renderTreeCollapsed(tree: MessageTree | MessageTree[]): string {
+  if (Array.isArray(tree)) {
+    return tree.map((t, i) => `[${i}]\n${renderTreeCollapsed(t)}`).join('\n');
+  }
+  const lines: string[] = [`${tree.messageType} (message)`];
+  for (const f of tree.fields) {
+    lines.push(renderFieldCollapsed(f, '├─ '));
+  }
+  return lines.join('\n');
+}
+
+function renderFieldCollapsed(f: FieldNode, indent: string): string {
+  const nameWithId = f.name.charAt(0) === '[' ? f.name : `${f.name}#${f.id}`;
+  switch (f.kind) {
+    case 'scalar':
+      if (f.value == null || f.value === undefined) return `${indent}${nameWithId} (${f.type}) (unset)`;
+      if (typeof f.value === 'string') return `${indent}${nameWithId} (${f.type}) = "${truncate(f.value)}"`;
+      return `${indent}${nameWithId} (${f.type}) = ${f.value}`;
+    case 'enum':
+      if (f.rawValue == null || f.rawValue === undefined) return `${indent}${nameWithId} (enum ${f.type}) (unset)`;
+      return `${indent}${nameWithId} (enum ${f.type}) = ${f.rawValue} (${f.value})`;
+    case 'bytes':
+      if (!f.value) return `${indent}${nameWithId} (bytes) (unset)`;
+      return `${indent}${nameWithId} (bytes, ${f.rawValue || 0}B) = ${truncate(f.value)}`;
+    case 'any':
+      if (f.anyType) {
+        const n = f.fields ? f.fields.length : 0;
+        if (n > 0) return `${indent}${nameWithId} (Any → ${f.anyType}, ${n} fields) ▸`;
+        return `${indent}${nameWithId} (Any → ${f.anyType}) (unset)`;
+      }
+      return `${indent}${nameWithId} (Any) (unset)`;
+    case 'message':
+      if (!f.fields || f.fields.length === 0) return `${indent}${nameWithId} (${f.type}) (unset)`;
+      return `${indent}${nameWithId} (${f.type}, ${f.fields.length} fields) ▸`;
+    case 'repeated':
+      if (!f.items || f.items.length === 0) return `${indent}${nameWithId} (repeated ${f.type}) []`;
+      return `${indent}${nameWithId} (repeated ${f.type}, ${f.items.length} items) ▸`;
+    case 'map':
+      if (!f.items || f.items.length === 0) return `${indent}${nameWithId} (map) {}`;
+      return `${indent}${nameWithId} (map, ${f.items.length} entries) ▸`;
+    default:
+      return `${indent}${nameWithId} (${f.type})`;
+  }
+}
+
+// --- Path navigation (for --path flag) ---
+
+import { parsePath, type PathSegment } from './path-nav';
+
+export function navigatePath(tree: MessageTree | MessageTree[], path: string): MessageTree | null {
+  const segments: PathSegment[] = parsePath(path);
+  let current: any = Array.isArray(tree) ? tree[0] : tree;
+
+  for (const seg of segments) {
+    if (current == null) return null;
+    if (typeof seg === 'number') {
+      // Array index
+      if (current.items && seg < current.items.length) {
+        current = current.items[seg];
+      } else if (Array.isArray(current) && seg < current.length) {
+        current = current[seg];
+      } else {
+        return null;
+      }
+    } else {
+      // Field name
+      if (current.fields) {
+        const found = current.fields.find((f: FieldNode) => f.name === seg);
+        if (found) { current = found; } else { return null; }
+      } else if (current.items && current.items.length > 0) {
+        // Maybe navigating into first item of a repeated field
+        const item = current.items[0];
+        if (item.fields) {
+          const found = item.fields.find((f: FieldNode) => f.name === seg);
+          if (found) { current = found; } else { return null; }
+        } else { return null; }
+      } else {
+        return null;
+      }
+    }
+  }
+
+  // Build a MessageTree from the found node
+  if (current.fields) {
+    return { messageType: current.type || current.anyType || current.name || 'unknown', fields: current.fields };
+  }
+  if (current.items) {
+    return { messageType: `${current.type || current.name || 'unknown'} (repeated, ${current.items.length} items)`, fields: current.items };
+  }
+  // Scalar — single field
+  return { messageType: current.type || current.name || 'scalar', fields: [current] };
+}

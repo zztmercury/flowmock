@@ -8,6 +8,7 @@
 import { detect, type DetectInfo } from './content-type';
 import { pbEngine, rules, flowStore } from './ctx';
 import { readBody, cloneData } from './helpers';
+import { expandAny, packAny } from './any-expand';
 import * as zlib from 'zlib';
 
 export default (server: any, options: any) => {
@@ -39,7 +40,23 @@ export default (server: any, options: any) => {
         decoded = JSON.parse(decompressed.toString('utf-8'));
       }
 
+      // Expand Any fields so patch path can navigate through them
+      if (info.protocol === 'protobuf' && info.desc && info.messageType) {
+        try {
+          const MsgType = await pbEngine.getMessageType(info.desc, info.messageType);
+          await expandAny(decoded, MsgType, MsgType.root as any);
+        } catch {}
+      }
+
       const patched = rules.apply(fullUrl, info.protocol, decoded);
+
+      // Pack Any fields back to bytes (after patch)
+      if (info.protocol === 'protobuf' && info.desc && info.messageType) {
+        try {
+          const MsgType = await pbEngine.getMessageType(info.desc, info.messageType);
+          await packAny(patched, MsgType, MsgType.root as any);
+        } catch {}
+      }
 
       let encoded: Buffer;
       if (info.protocol === 'protobuf') {
