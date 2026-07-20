@@ -84,15 +84,6 @@ WHISTLE_MIN="2.9.100"
 # --- Uninstall ---
 if [ $UNINSTALL -eq 1 ]; then
     info "Uninstalling pbmockx..."
-    # Remove pipe rule from whistle
-    PIPE_JS="/tmp/.pbmockx-pipe.js"
-    cat > "$PIPE_JS" << 'PIPEOF'
-exports.name = 'pbmockx-pipe';
-exports.rules = '';
-PIPEOF
-    w2 add "$PIPE_JS" --force 2>/dev/null || true
-    rm -f "$PIPE_JS"
-    # Unregister plugin
     w2 uninstall whistle.pbmockx 2>/dev/null || true
     npm unlink -g whistle.pbmockx 2>/dev/null || true
     pbmockx skill uninstall 2>/dev/null || true
@@ -150,31 +141,25 @@ npm install --silent || { err "npm install failed"; exit 1; }
 npx tsc || { err "TypeScript build failed"; exit 1; }
 ok "Plugin built"
 
-# --- Step 4: Register plugin + add pipe rule ---
-info "Registering whistle.pbmockx plugin..."
-w2 install "$PLUGIN_DIR" 2>/dev/null || true
-ok "Plugin registered"
-
-# Add pipe rule to whistle (enables decode→patch→encode for all requests)
-info "Adding pipe rule to whistle..."
-PIPE_JS="/tmp/.pbmockx-pipe.js"
-cat > "$PIPE_JS" << 'PIPEOF'
-exports.name = 'pbmockx-pipe';
-exports.rules = '* pipe://pbmockx';
-PIPEOF
-w2 add "$PIPE_JS" --force 2>/dev/null && ok "Pipe rule added (* pipe://pbmockx)" || warn "Failed to add pipe rule. Add manually: * pipe://pbmockx"
-rm -f "$PIPE_JS"
-
-info "Start with: w2 start -A $PLUGIN_DIR"
+# --- Step 4: npm link (makes plugin globally available to whistle) ---
+info "Linking plugin globally..."
+cd "$PLUGIN_DIR"
+npm link --silent 2>/dev/null || { warn "npm link failed (may need sudo)"; }
+ok "Plugin linked — whistle auto-loads global plugins on start"
+info "Start with: w2 start (or w2 restart if already running)"
 
 # --- Step 5: npm link for short command ---
 info "Setting up pbmockx command..."
-cd "$PLUGIN_DIR"
-npm link --silent 2>/dev/null || warn "npm link failed (may need sudo). Use: w2 exec pbmockx"
 if command -v pbmockx &>/dev/null; then
     ok "pbmockx command available"
 else
     warn "pbmockx not in PATH. Use: w2 exec pbmockx <command>"
+fi
+
+# --- Step 6: Restart whistle to load plugin + rules.txt ---
+if w2 status 2>/dev/null | grep -q "running"; then
+    info "Restarting whistle to load plugin..."
+    w2 restart 2>/dev/null && ok "whistle restarted" || warn "Restart failed. Run: w2 restart"
 fi
 
 # --- Step 6: Install skill ---
@@ -186,7 +171,7 @@ echo ""
 ok "pbmockx v$(cat "$PROJECT_ROOT/VERSION") installed successfully!"
 echo ""
 info "Next steps:"
-echo "  1. Start whistle:       w2 start -A $PLUGIN_DIR"
+echo "  1. Start whistle:       w2 start"
 echo "  2. Install PC cert:     w2 ca"
 echo "  3. Check health:        pbmockx doctor"
 echo "  4. View docs:           pbmockx agent-doc"

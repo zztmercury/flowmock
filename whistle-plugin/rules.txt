@@ -1,0 +1,3 @@
+# pbmockx plugin rules — auto-loaded when plugin initializes
+# Enables pipe processing for all requests (decode → patch → encode)
+* pipe://pbmockx
