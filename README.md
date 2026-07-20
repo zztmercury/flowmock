@@ -126,3 +126,13 @@ pbmockx <command> -h / --help                  # 各命令的详细帮助（flow
 | 持久化规则 | 启动时配置 | rules.yaml 实时写回 |
 | AI 接入 | 无 | CLI + w2 exec + agent-doc |
 | 类型歧义 | 无 | 无（不走 JSON 转换） |
+
+## 相关
+
+- [whistle](https://github.com/avwo/whistle) — Node.js 调试代理（本项目宿主）
+- [protobufjs](https://github.com/protobufjs/protobuf.js) — Protocol Buffers 实现（PB 引擎）
+- [lack](https://github.com/avwo/lack) — whistle 插件脚手架（开发用）
+
+## License
+
+MIT
