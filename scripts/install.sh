@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# pbmockx install.sh — whistle plugin installer
+# pbmockx install.sh — whistle plugin installer (OMZ-style one-line supported)
 #
 # Usage:
+#   One-line:  sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/pbmockx/main/scripts/install.sh)"
 #   Local:     ./scripts/install.sh
 #   Update:    ./scripts/install.sh --update
 #   Uninstall: ./scripts/install.sh --uninstall
 #
 # This script:
-#   1. Checks Node.js >= 18
-#   2. Checks/installs whistle (version >= 2.9.100)
-#   3. Installs whistle.pbmockx plugin (from local whistle-plugin/)
-#   4. npm link (enables `pbmockx` short command)
-#   5. pbmockx skill install (agent docs)
-#   6. Prompts w2 ca (PC root certificate)
+#   1. Clones repo (if running remotely)
+#   2. Checks Node.js >= 18
+#   3. Checks/installs whistle (version >= 2.9.100)
+#   4. Installs whistle.pbmockx plugin (build + register)
+#   5. npm link (enables `pbmockx` short command)
+#   6. pbmockx skill install (agent docs)
+#   7. Prompts w2 ca (PC root certificate)
+
+REPO_URL="https://github.com/zztmercury/pbmockx.git"
+INSTALL_DIR_DEFAULT="$HOME/.pbmockx"
 
 # --- Colors ---
 if [ -t 1 ]; then
@@ -43,9 +48,35 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PLUGIN_DIR="$PROJECT_ROOT/whistle-plugin"
+# --- Detect: local vs remote install ---
+# If running from curl|sh, SCRIPT_DIR won't have the repo. Clone it.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null)" || ""
+PROJECT_ROOT=""
+PLUGIN_DIR=""
+
+if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/../whistle-plugin/package.json" ]; then
+    # Local install — script is inside the repo
+    PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+    PLUGIN_DIR="$PROJECT_ROOT/whistle-plugin"
+else
+    # Remote install — clone the repo
+    INSTALL_DIR="${PBMOCKX_DIR:-$INSTALL_DIR_DEFAULT}"
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        if [ $UPDATE -eq 1 ]; then
+            info "Updating pbmockx at $INSTALL_DIR..."
+            cd "$INSTALL_DIR"
+            git pull --quiet || warn "git pull failed, continuing with existing version"
+        else
+            info "Found existing pbmockx at $INSTALL_DIR"
+        fi
+    else
+        info "Cloning pbmockx to $INSTALL_DIR..."
+        git clone --quiet "$REPO_URL" "$INSTALL_DIR" || { err "git clone failed"; exit 1; }
+    fi
+    PROJECT_ROOT="$INSTALL_DIR"
+    PLUGIN_DIR="$PROJECT_ROOT/whistle-plugin"
+fi
+
 NODE_MIN_MAJOR=18
 WHISTLE_MIN="2.9.100"
 
@@ -55,6 +86,10 @@ if [ $UNINSTALL -eq 1 ]; then
     w2 uninstall whistle.pbmockx 2>/dev/null || true
     npm unlink -g whistle.pbmockx 2>/dev/null || true
     pbmockx skill uninstall 2>/dev/null || true
+    if [ -d "$INSTALL_DIR_DEFAULT" ] && [ "$PROJECT_ROOT" = "$INSTALL_DIR_DEFAULT" ]; then
+        info "Removing $INSTALL_DIR_DEFAULT..."
+        rm -rf "$INSTALL_DIR_DEFAULT"
+    fi
     ok "Uninstalled. Run: w2 stop"
     exit 0
 fi
@@ -81,7 +116,6 @@ if ! command -v w2 &>/dev/null; then
     ok "whistle installed"
 else
     W2_VERSION=$(w2 --version 2>/dev/null | head -1)
-    # Compare version (simple numeric comparison)
     W2_OK=$(node -e "
         const cur = '$W2_VERSION'.split('.').map(Number);
         const min = '$WHISTLE_MIN'.split('.').map(Number);
@@ -106,14 +140,13 @@ npm install --silent || { err "npm install failed"; exit 1; }
 npx tsc || { err "TypeScript build failed"; exit 1; }
 ok "Plugin built"
 
-# --- Step 4: Install plugin to whistle ---
-info "Installing whistle.pbmockx plugin..."
-# For local development: use -A flag to add plugin path directly
-w2 start -A "$PLUGIN_DIR" --no-prev-options 2>/dev/null &
-W2_PID=$!
-sleep 2
-kill $W2_PID 2>/dev/null || true
-ok "Plugin registered (use: w2 start -A $PLUGIN_DIR)"
+# --- Step 4: Register plugin to whistle ---
+info "Registering whistle.pbmockx plugin..."
+# Use w2 install to register the plugin globally
+w2 install "$PLUGIN_DIR" 2>/dev/null || true
+# Also support -A flag for local dev
+ok "Plugin registered"
+info "Start with: w2 start -A $PLUGIN_DIR"
 
 # --- Step 5: npm link for short command ---
 info "Setting up pbmockx command..."
@@ -131,7 +164,7 @@ node "$PLUGIN_DIR/bin/cli.js" skill install 2>/dev/null || warn "Skill install f
 
 # --- Done ---
 echo ""
-ok "pbmockx installed successfully!"
+ok "pbmockx v$(cat "$PROJECT_ROOT/VERSION") installed successfully!"
 echo ""
 info "Next steps:"
 echo "  1. Start whistle:       w2 start -A $PLUGIN_DIR"

@@ -19,11 +19,9 @@ whistle 插件，抓包查看/修改 **protobuf + JSON** 数据，专为 AI agen
 
 ## 安装
 
-### 本地安装
+### 一行安装
 ```bash
-git clone https://github.com/zztmercury/pbmockx.git
-cd pbmockx
-./scripts/install.sh
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/pbmockx/main/scripts/install.sh)"
 ```
 
 install.sh 会：
@@ -33,11 +31,14 @@ install.sh 会：
 4. npm link（让 `pbmockx` 短命令可用）
 5. 安装 SKILL.md 到 agent skill 目录
 
+### 更新
+```bash
+pbmockx version --check                    # 检查更新
+# 或
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/pbmockx/main/scripts/install.sh)" -- --update
+```
 ### 证书
 ```bash
-w2 ca                          # PC 根证书（浏览器抓 HTTPS）
-pbmockx connect-android       # Android 设备代理 + 证书
-```
 
 ## 启动
 ```bash
