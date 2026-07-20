@@ -1,120 +1,127 @@
 # pbmockx
 
-mitmproxy 替代 Charles 抓包查看/修改 **protobuf + JSON** 数据，专为 AI agent 工作流设计。
+whistle 插件，抓包查看/修改 **protobuf + JSON** 数据，专为 AI agent 工作流设计。
 
-addon 自动识别协议（按 Charles Protocol Buffers 自描述规则：Content-Type 携带 `desc`/`messageType`/`delimited`），把 PB 和 JSON 统一解码成 dict，AI agent 通过 CLI 按 path 改字段，不碰 protobuf wire format。
+插件自动识别协议（按 Charles Protocol Buffers 自描述规则：Content-Type 携带 `desc`/`messageType`/`delimited`），直接在 PB message 对象层面操作（不走 JSON 转换），AI agent 通过 CLI 按 path 改字段，不碰 protobuf wire format。
 
 ## 能力
-- **协议自动识别**：`application/x-protobuf`(带 desc) / `application/json` 自动判别
-- **PB 解码**：复刻 Charles 规则——解析 Content-Type 的 desc URL → 下载 `.desc`(FileDescriptorSet，带 HTTP 缓存) → `descriptor_pool` 动态建类 → `ParseFromString` → `json_format.MessageToDict`(保留 proto 字段名)
-- **JSON 解码**：原生 `json.loads`
-- **统一 dict 化**：PB 和 JSON 都成 dict，操作方式一致
-- **双向编码**：dict → PB(`ParseDict`+`SerializeToString`) / dict → JSON，支持 delimited 列表
-- **Charles 式 mock**：
-  - `map-local`：整 body 替换（支持 raw 文件 或 dict→PB 自动 encode）
-  - `map-remote`：请求重定向（完整 URL 替换 / regex 部分替换）
-  - `breakpoint`：per-URL 暂停（规则式，不再全局阻塞）
-  - `patch`：按 path 改字段（原有能力）
-- **持久化规则**：rules add/del 实时写回 rules.yaml，重启不丢
-- **control API**（:9090）+ **CLI** + **SKILL.md**，多 agent 通用
+
+- **PB 字段树查看**：whistle Network → Request/Response 区的 **PBView** 子标签页（不是独立父级 tab），展示结构化字段树。格式 `name#N (type) = value`——字段名 + **字段号**（`#N`）+ 类型标注 + 值，默认折叠，可展开/折叠。int64 显示数字 + `(int64)`，enum 显示数字 + 名字 + `(enum)`，`google.protobuf.Any` 按 `type_url` 嵌套解码（显示 `Any → <type>`）；未设置字段显示 `(unset)`（灰色）
+- **JSON pretty-JSON**：whistle 自带，插件不管
+- **PB + JSON 统一 mock**：
+  - `patch`：按 path 改字段（PB message 对象层面操作，不走 JSON）
+  - `map_local(data)`：dict → PB encode 整 body 替换
+  - `map_local(file)` / `map_remote`：whistle 原生规则（rawfile:// / https://）
+- **pipe 单向 mock**：`pattern pipe://pbmockx` 启用 decode→patch→encode，hook 自动处理 **gzip/deflate/br 解压**（响应头取自 `req.headers`），返回未压缩 body 由 whistle 处理 content-encoding
+- **rulesServer 自动翻译**：map_remote / map_local(file) 规则自动翻译为 whistle 原生规则
+- **持久化规则**：rules.yaml 实时写回，map_local(data) 数据存外部 mock-data/ 文件
+- **CLI + w2 exec + SKILL.md**，所有命令支持 `-h`/`--help`，多 agent 通用
 
 ## 安装
 
-### 一行安装
-```bash
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/zztmercury/pbmockx/main/scripts/install.sh)"
-```
-
-### 本地安装（调试用）
+### 本地安装
 ```bash
 git clone https://github.com/zztmercury/pbmockx.git
 cd pbmockx
 ./scripts/install.sh
 ```
 
-install.sh 只负责部署 CLI（venv + 软链 + PATH）。
-安装 skill、检测更新等通过 CLI 子命令：
+install.sh 会：
+1. 检查 Node.js >= 18
+2. 检查/安装 whistle（>= 2.9.100）
+3. 构建插件（tsc）+ 注册到 whistle
+4. npm link（让 `pbmockx` 短命令可用）
+5. 安装 SKILL.md 到 agent skill 目录
+
+### 证书
 ```bash
-pbmockx skill install     # 安装 SKILL.md 到 agent skill 目录
-pbmockx doctor            # 环境健康检查
-pbmockx update            # 自更新
+w2 ca                          # PC 根证书（浏览器抓 HTTPS）
+pbmockx connect-android       # Android 设备代理 + 证书
 ```
 
 ## 启动
 ```bash
-pbmockx start             # 起 mitmdump + addon（不绑定平台）
-pbmockx connect-android  # 配置 Android 设备代理（adb reverse + http_proxy，可选 -s <serial>）
+w2 start -A whistle-plugin     # 本地开发：直接加载插件目录
+# 或（已通过 w2 install 安装）
+w2 start
 ```
-首次按提示装 CA 证书（用户证书：设备访问 [http://mitm.it](http://mitm.it)；系统证书见 [mitmproxy 官方文档](https://docs.mitmproxy.org/stable/howto/install-system-trusted-ca-android/)）。
 
 ## CLI（AI agent 用）
+
+通过 `w2 exec pbmockx <cmd>` 或 npm link 后直接 `pbmockx <cmd>`：
+
 ```bash
 # 查看
-pbmockx flows [--filter <regex>] [--paused]  # 列 flow + 协议标签 + 暂停标记
-pbmockx decode <id> [--original]              # 解码 dict（--original 看原始响应）
-pbmockx flows clear                          # 清空 flow_store
+pbmockx flows [--filter <regex>]                # decoded flow 列表
+pbmockx decode <id> [--req|--res] [--original]  # 展示 headers + PB 字段树 / JSON pretty
+                                                #   --req      只看 request headers + body
+                                                #   --res      只看 response headers + body
+                                                #   --original 显示 patch 前原始数据（对比）
 
 # Mock — patch（按 path 改字段）
-pbmockx mock <id> game.name 测试              # 单条改
-pbmockx rules add 'api/game' game.name 测试   # 持续规则
+pbmockx rules add 'api/game' game.name 测试     # patch 规则（PB/JSON 通用）
+pbmockx rules list [--type patch|map_local|map_remote]
+pbmockx rules del <id>
+pbmockx rules save / reload
 
-# Mock — map-local（整 body 替换，Charles 式）
-pbmockx map-local add 'api/game' ./mock.json  # raw 文件替换
-pbmockx map-local add 'api/game' --data '{"game":{"name":"test"}}'  # dict→PB encode
+# Mock — map-local（整 body 替换）
+pbmockx map-local add 'api/game' --data '{"name":"test"}' [--desc <url>] [--messageType <type>]
+pbmockx map-local add 'api/game' --file /path/to/mock.pb    # whistle native rawfile://
 pbmockx map-local list / del <id>
 
-# Mock — map-remote（请求重定向）
-pbmockx map-remote add 'api.test.com' 'http://mock-server.com'  # 完整 URL 替换
-pbmockx map-remote add 'api/test' 'api/mock' --regex            # regex 部分替换
+# Mock — map-remote（请求重定向，whistle native）
+pbmockx map-remote add 'api/old' 'https://new.example.com/new' [--regex]
 pbmockx map-remote list / del <id>
 
-# Mock — breakpoint（per-URL 暂停）
-pbmockx breakpoint add 'api/game'             # 加断点规则
-pbmockx breakpoint list / del <id> / off
-
-# 暂停后操作
-pbmockx mock <id> game.name 测试              # 改字段
-pbmockx resume <id>                           # 放行
-pbmockx abort <id>                            # 取消（给客户端发错误）
-
-# 规则管理
-pbmockx rules list [--type <type>]            # 列规则（按类型过滤）
-pbmockx rules del <id>                        # 按 id 删
-pbmockx rules save / reload                   # 手动持久化/重载
+# 进程管理（w2 原生）
+w2 start / w2 stop / w2 restart / w2 status
+w2 ca                                          # PC 证书
 
 # 工具维护
-pbmockx skill install / list / uninstall      # 安装/列出/卸载 SKILL.md
-pbmockx update [--check]                      # 检测/执行自更新
-pbmockx version                               # 版本号
-pbmockx doctor                                # 全链路健康检查
-pbmockx start / stop / restart                # 启动/停止/重启
-pbmockx connect-android [-s <serial>]        # 配置 Android 设备代理
+pbmockx web                                    # 打开 whistle UI
+pbmockx doctor                                 # 全链路健康检查
+pbmockx agent-doc                              # 打印 SKILL.md
+pbmockx skill install                          # 安装 SKILL.md 到 agent 目录
+pbmockx version [--check]                      # 版本 + 远程检查
+pbmockx connect-android [-s <serial>]          # Android 代理 + 证书
+
+# 帮助
+pbmockx -h / --help                            # 顶层帮助
+pbmockx <command> -h / --help                  # 各命令的详细帮助（flows/decode/rules/map-local/map-remote/web/doctor/connect-android/version）
 ```
 
 ## 接入 agent
 - **opencode**：`pbmockx skill install` 自动装到 `~/.agents/skills/pbmockx/`
 - **Claude Code**：同上，自动检测 `~/.claude/skills/`
-- **其他 agent**：跑 `pbmockx agent-doc` 取使用说明注入 system prompt，或 `pbmockx skill install --dir <path>`
+- **其他 agent**：跑 `pbmockx agent-doc` 取使用说明注入 system prompt
 
 ## 文件
-- `addon/pbmockx_addon.py` — mitmproxy addon（协议识别/PB/JSON/dict/双向/mock/control API/InteractiveContentview）
-- `bin/pbmockx` — CLI（纯 stdlib，调 control API + 工具维护）
-- `scripts/install.sh` — 一键安装（curl | sh）
-- `scripts/start.sh` — 启动脚本（mitmdump，不绑定平台）
-- `scripts/connect-android.sh` — Android 设备代理配置（adb reverse）
+- `whistle-plugin/` — whistle.pbmockx 插件（TS 源码 + CLI + PBView 子标签页）
+  - `src/pb-engine.ts` — PB 引擎（protobufjs + long，monkey-patch `fromDescriptor` 跳过 `resolveAll`，`addJSON` 加载 `descriptor.json` 等 WKT）
+  - `src/resRead.ts` / `reqRead.ts` — pipe hooks（decode→patch→encode，自动 gzip/deflate/br 解压，响应头取自 `req.headers`）
+  - `src/rulesServer.ts` — map_remote/map_local(file) → whistle 原生规则
+  - `src/uiServer/` — Koa CGI（规则 CRUD + flow 查询 + decode-pb）
+  - `public/pb-req.html` / `pb-res.html` — PBView 子标签页（Request/Response 各一份，JS 内联无外部脚本），通过 whistleBridge 的 `addSessionActiveListener` + `getActiveSession` 拉取 session body
+  - `bin/cli.js` — Node.js CLI（支持 `-h`/`--help`）
+- `addon/pbmockx_addon.py` — mitmproxy 版本（保留作 fallback）
+- `scripts/install.sh` — 一键安装（Node.js + whistle + 插件）
+- `scripts/start-mitmproxy.sh` — mitmproxy 启动（fallback）
 - `docs/SKILL.md` — agent 文档（与 CLI `agent-doc` 同源）
-- `rules.yaml.example` — 规则模板（git tracked）；运行时生成 `rules.yaml`（.gitignore 排除，不受 git pull 影响）
-- `tests/test_engine.py` / `tests/test_server.py` — 测试
+- `rules.yaml.example` — 规则模板
+- `tests/test_server.ts` + `test_pb-engine.ts` — 测试（100% Node.js）
+
+> 已删除：`bin/pbmockx`（Python CLI）、`scripts/start.sh`、旧版 `public/pb-view.html` + `pb-view.js`（已合并进 `pb-req.html` / `pb-res.html`）。whistle `networkColumn`（PB Type 列）也已移除。
 
 ## 与 Charles 对比
-| | Charles | pbmockx |
+| | Charles | pbmockx (whistle) |
 |---|---|---|
 | PB schema | `.desc`/`.proto` | `.desc`（同 Charles 规则） |
-| PB 查看 | Text/Structured Viewer | Web UI 默认 pbmockx view（格式化 JSON）|
-| PB 修改 | Structured 双击改 | CLI path+value（AI 可操作）；Web UI 编辑待 mitmweb 支持 |
-| JSON | 原生 | 原生 |
+| PB 查看 | Structured Viewer | PBView 子标签页字段树（`name#N (type) = value`，带类型标注） |
+| PB 修改 | Structured 双击改 | CLI path+value（AI 可操作） |
+| JSON 查看 | Text | whistle pretty-JSON |
 | Map Local | 整文件替换 | 整文件 + dict→PB encode |
 | Map Remote | URL 映射 | 完整 URL + regex 替换 |
-| Breakpoint | per-URL 暂停 | per-URL 规则式暂停 |
+| Patch | 无 | path 导航改字段 |
 | 持久化规则 | 启动时配置 | rules.yaml 实时写回 |
-| AI 接入 | 无 | CLI + agent-doc，多框架通用 |
+| AI 接入 | 无 | CLI + w2 exec + agent-doc |
+| 类型歧义 | 无 | 无（不走 JSON 转换） |

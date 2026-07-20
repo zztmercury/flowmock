@@ -1,0 +1,302 @@
+/**
+ * test_pb-engine.ts — unit tests for PBEngine, path-nav, rules.
+ *
+ * Run: node -e "require('./tests/test_pb-engine').run()"
+ */
+
+import * as assert from 'assert';
+import protobuf from 'protobufjs';
+import 'protobufjs/ext/descriptor';
+import { PBEngine, DescCache } from '../src/pb-engine';
+import { parsePath, setByPath, getByPath } from '../src/path-nav';
+import { MockRule, RuleEngine } from '../src/rules';
+import { isPb, isJson, parseCtParams, detect } from '../src/content-type';
+import { buildFieldTree, renderTree } from '../src/field-tree';
+import * as path from 'path';
+import * as os from 'os';
+import * as fs from 'fs';
+
+// Build a demo.Person message type for testing
+function buildDemoPerson(): { MsgType: protobuf.Type; encode: (data: any) => Buffer; descBytes: Buffer } {
+  const root = protobuf.Root.fromJSON({
+    nested: {
+      demo: {
+        nested: {
+          Person: {
+            fields: {
+              name: { type: 'string', id: 1 },
+              id: { type: 'int32', id: 2 },
+            }
+          }
+        }
+      }
+    }
+  });
+  root.resolveAll();
+
+  const MsgType = root.lookupType('demo.Person');
+  const fds = (root as any).toDescriptor();
+  const descExt = require('protobufjs/ext/descriptor');
+  const descBytes = Buffer.from(descExt.FileDescriptorSet.encode(fds).finish());
+
+  return {
+    MsgType,
+    descBytes,
+    encode: (data: any) => Buffer.from(MsgType.encode(MsgType.create(data)).finish()),
+  };
+}
+
+const tests: { name: string; fn: () => Promise<void> }[] = [];
+
+function test(name: string, fn: () => Promise<void>) {
+  tests.push({ name, fn });
+}
+
+// --- content-type tests ---
+
+test('isPb detects protobuf content-type', () => {
+  assert.ok(isPb('application/x-protobuf'));
+  assert.ok(isPb('application/x-google-protobuf'));
+  assert.ok(!isPb('application/json'));
+  assert.ok(!isPb('text/html'));
+  return Promise.resolve();
+});
+
+test('isJson detects json content-type', () => {
+  assert.ok(isJson('application/json', Buffer.alloc(0)));
+  assert.ok(isJson('application/json; charset=utf-8', Buffer.alloc(0)));
+  assert.ok(isJson('text/plain', Buffer.from('{"a":1}')));
+  assert.ok(!isJson('text/plain', Buffer.from('not json')));
+  return Promise.resolve();
+});
+
+test('parseCtParams parses Charles self-describing format', () => {
+  const ct = 'application/x-protobuf; desc="http://host/Model.desc"; messageType="demo.Person"; delimited=true';
+  const params = parseCtParams(ct);
+  assert.strictEqual(params.desc, 'http://host/Model.desc');
+  assert.strictEqual(params.messageType, 'demo.Person');
+  assert.strictEqual(params.delimited, true);
+
+  const bare = 'application/x-protobuf; desc=http://host/M.desc; messageType=demo.M';
+  const params2 = parseCtParams(bare);
+  assert.strictEqual(params2.desc, 'http://host/M.desc');
+  assert.strictEqual(params2.messageType, 'demo.M');
+  assert.strictEqual(params2.delimited, false);
+  return Promise.resolve();
+});
+
+test('detect identifies PB and JSON', () => {
+  const pbInfo = detect('application/x-protobuf; desc="http://h/d.desc"; messageType="m.T"', Buffer.alloc(0));
+  assert.strictEqual(pbInfo!.protocol, 'protobuf');
+  assert.strictEqual(pbInfo!.desc, 'http://h/d.desc');
+
+  const jsonInfo = detect('application/json', Buffer.from('{}'));
+  assert.strictEqual(jsonInfo!.protocol, 'json');
+
+  const none = detect('text/html', Buffer.from('<html>'));
+  assert.strictEqual(none, null);
+  return Promise.resolve();
+});
+
+// --- path-nav tests ---
+
+test('parsePath parses dotted + indexed paths', () => {
+  assert.deepStrictEqual(parsePath('a.b.c'), ['a', 'b', 'c']);
+  assert.deepStrictEqual(parsePath('a.b[0].c'), ['a', 'b', 0, 'c']);
+  assert.deepStrictEqual(parsePath('[0][1]'), [0, 1]);
+  return Promise.resolve();
+});
+
+test('getByPath/setByPath navigate objects', () => {
+  const obj = { a: { b: [{ c: 1 }] } };
+  assert.strictEqual(getByPath(obj, ['a', 'b', 0, 'c']), 1);
+  setByPath(obj, ['a', 'b', 0, 'c'], 42);
+  assert.strictEqual(obj.a.b[0].c, 42);
+  return Promise.resolve();
+});
+
+// --- PBEngine tests ---
+
+test('PBEngine decode/encode round-trip', async () => {
+  const demo = buildDemoPerson();
+  const descBytes = demo.descBytes;
+
+  // Create a mock DescCache that returns our descBytes
+  const mockCache = {
+    get: async (url: string) => descBytes,
+  };
+  const engine = new PBEngine(mockCache as any);
+
+  const descUrl = 'test://demo.desc';
+  const messageType = 'demo.Person';
+
+  // Encode
+  const original = { name: 'Alice', id: 42 };
+  const encoded = await engine.encode(descUrl, messageType, false, original);
+
+  // Decode
+  const decoded = await engine.decode(descUrl, messageType, false, encoded);
+
+  assert.strictEqual(decoded.name, 'Alice');
+  assert.strictEqual(decoded.id, 42);
+});
+
+test('PBEngine delimited encode/decode', async () => {
+  const demo = buildDemoPerson();
+  const mockCache = { get: async () => demo.descBytes };
+  const engine = new PBEngine(mockCache as any);
+
+  const descUrl = 'test://demo.desc';
+  const messageType = 'demo.Person';
+
+  const items = [
+    { name: 'Alice', id: 1 },
+    { name: 'Bob', id: 2 },
+  ];
+  const encoded = await engine.encode(descUrl, messageType, true, items);
+  const decoded = await engine.decode(descUrl, messageType, true, encoded);
+
+  assert.strictEqual(Array.isArray(decoded), true);
+  assert.strictEqual(decoded.length, 2);
+  assert.strictEqual(decoded[0].name, 'Alice');
+  assert.strictEqual(decoded[1].name, 'Bob');
+});
+
+// --- field-tree tests ---
+
+test('buildFieldTree builds tree with type annotations', async () => {
+  const demo = buildDemoPerson();
+  const mockCache = { get: async () => demo.descBytes };
+  const engine = new PBEngine(mockCache as any);
+
+  const msg = await engine.decode('test://demo.desc', 'demo.Person', false,
+    demo.encode({ name: 'TestName', id: 99 }));
+
+  const tree = await buildFieldTree(msg, demo.MsgType) as any;
+  assert.strictEqual(tree.messageType, 'demo.Person');
+  assert.ok(tree.fields.length >= 2);
+
+  const nameField = tree.fields.find((f: any) => f.name === 'name');
+  assert.ok(nameField);
+  assert.strictEqual(nameField!.type, 'string');
+  assert.strictEqual(nameField!.value, 'TestName');
+
+  const idField = tree.fields.find((f: any) => f.name === 'id');
+  assert.ok(idField);
+  assert.strictEqual(idField!.type, 'int32');
+  assert.strictEqual(idField!.value, 99);
+});
+
+test('renderTree produces readable text', async () => {
+  const demo = buildDemoPerson();
+  const mockCache = { get: async () => demo.descBytes };
+  const engine = new PBEngine(mockCache as any);
+
+  const msg = await engine.decode('test://demo.desc', 'demo.Person', false,
+    demo.encode({ name: 'Alice', id: 1 }));
+
+  const tree = await buildFieldTree(msg, demo.MsgType) as any;
+  const text = renderTree(tree);
+  assert.ok(text.includes('demo.Person'));
+  assert.ok(text.includes('name'));
+  assert.ok(text.includes('Alice'));
+  assert.ok(text.includes('(string)'));
+});
+
+// --- RuleEngine tests ---
+
+test('RuleEngine add/dedup/delete', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pbmockx-test-'));
+  const rulesFile = path.join(tmpDir, 'rules.yaml');
+  const mockDir = path.join(tmpDir, 'mock-data');
+  fs.mkdirSync(mockDir, { recursive: true });
+
+  const engine = new RuleEngine(rulesFile, mockDir);
+
+  // Add patch rule
+  const r1 = new MockRule({ type: 'patch', url_pattern: 'api/test', path: 'name', value: 'Mocked', protocol: 'protobuf' });
+  engine.add(r1);
+  assert.strictEqual(engine.list().length, 1);
+
+  // Dedup: same url + type + path → replace
+  const r2 = new MockRule({ type: 'patch', url_pattern: 'api/test', path: 'name', value: 'Replaced' });
+  engine.add(r2);
+  assert.strictEqual(engine.list().length, 1);
+  assert.strictEqual(engine.list()[0].value, 'Replaced');
+
+  // Different path → new rule
+  const r3 = new MockRule({ type: 'patch', url_pattern: 'api/test', path: 'id', value: 99 });
+  engine.add(r3);
+  assert.strictEqual(engine.list().length, 2);
+
+  // Delete
+  assert.ok(engine.delete(r2.id!));
+  assert.strictEqual(engine.list().length, 1);
+
+  // Cleanup
+  fs.rmSync(tmpDir, { recursive: true });
+  return Promise.resolve();
+});
+
+test('RuleEngine matched filters by type/protocol', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pbmockx-test-'));
+  const engine = new RuleEngine(path.join(tmpDir, 'rules.yaml'), path.join(tmpDir, 'mock-data'));
+
+  engine.add(new MockRule({ type: 'patch', url_pattern: 'api/test', path: 'name', value: 'x', protocol: 'protobuf' }));
+  engine.add(new MockRule({ type: 'map_remote', url_pattern: 'api/old', replacement: 'https://new.com' }));
+
+  const pbPatches = engine.matched('http://api/test', 'protobuf', 'patch');
+  assert.strictEqual(pbPatches.length, 1);
+
+  const remotes = engine.matched('http://api/old', undefined, 'map_remote');
+  assert.strictEqual(remotes.length, 1);
+
+  // Protocol filter: patch with protocol=json should not match protobuf
+  const jsonPatches = engine.matched('http://api/test', 'json', 'patch');
+  assert.strictEqual(jsonPatches.length, 0);
+
+  fs.rmSync(tmpDir, { recursive: true });
+  return Promise.resolve();
+});
+
+test('RuleEngine save/reload round-trip', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pbmockx-test-'));
+  const rulesFile = path.join(tmpDir, 'rules.yaml');
+  const engine = new RuleEngine(rulesFile, path.join(tmpDir, 'mock-data'));
+
+  engine.add(new MockRule({ type: 'patch', url_pattern: 'api/x', path: 'name', value: 'test' }));
+  engine.add(new MockRule({ type: 'map_remote', url_pattern: 'api/old', replacement: 'https://new.com' }));
+  assert.ok(engine.save());
+
+  const engine2 = new RuleEngine(rulesFile, path.join(tmpDir, 'mock-data'));
+  const n = engine2.reload();
+  assert.strictEqual(n, 2);
+  assert.strictEqual(engine2.list().length, 2);
+
+  fs.rmSync(tmpDir, { recursive: true });
+  return Promise.resolve();
+});
+
+// --- Run ---
+
+export async function run() {
+  console.log('Running pbmockx tests...\n');
+  let passed = 0;
+  let failed = 0;
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      console.log(`  [PASS] ${name}`);
+      passed++;
+    } catch (e: any) {
+      console.error(`  [FAIL] ${name}: ${e.message}`);
+      failed++;
+    }
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed > 0 ? 1 : 0);
+}
+
+if (require.main === module) {
+  run();
+}
